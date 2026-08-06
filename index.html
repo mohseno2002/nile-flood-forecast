@@ -194,6 +194,29 @@ table.tb tr.hi td{background:#f2f7f4}
 @media (prefers-reduced-motion: reduce){ .flow{animation:none !important} }
 .rain-cell{cursor:pointer}
 .inp{width:78px;border:1px solid #d8d2c2;border-radius:8px;padding:5px 8px;font-family:inherit;font-size:13px;direction:ltr;text-align:center}
+
+/* ═══ سطح المكتب: مساحة أوسع وكثافة نصية أعلى ═══ */
+.net-node{cursor:pointer}
+@media(min-width:1200px){
+  .content{max-width:1360px;padding:26px 40px 70px}
+  .topbar h1{font-size:21px}
+  .panel{padding:22px;border-radius:18px;margin-top:18px}
+  .panel h2{font-size:16.5px}
+  .panel p.note{font-size:12.5px;line-height:1.75}
+  .grid{gap:17px}
+  table.tb{font-size:12.5px}
+  table.tb th{font-size:11.5px;padding:11px 10px}
+  table.tb td{padding:10px}
+  .kpi-card{padding:16px}
+  .kpi-body .big{font-size:27px}
+  .kpi-body .lbl{font-size:11.5px}
+  .kpi-body .sub{font-size:10.5px}
+  .banner{font-size:13px;line-height:1.8}
+}
+@media(min-width:1700px){
+  .content{max-width:1560px}
+  .grid.g5{grid-template-columns:repeat(5,1fr)}
+}
 </style>
 </head>
 <body>
@@ -208,7 +231,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.44</small>
+      <small id="buildtag">build 2.45</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -703,7 +726,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.44";
+var BUILD = "2.45";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -1876,6 +1899,27 @@ function netSpark(id,k){
    +'</svg>';
   return svg;
 }
+/* روابط الموقع لكل محطة — ظاهرة دائماً لا داخل بطاقة تُفتح بالنقر وحده */
+function netLinks(){
+  var rows="", i;
+  for(i=0;i<STATIONS.length;i++){
+    var S=STATIONS[i];
+    if(!S.key) continue;
+    var la=(S.gLat!==undefined)?S.gLat:S.lat, lo=(S.gLon!==undefined)?S.gLon:S.lon;
+    if(la===undefined||lo===undefined) continue;
+    var earth='https://earth.google.com/web/@'+la+','+lo+',400a,16000d,35y,0h,0t,0r';
+    var maps='https://www.google.com/maps/@?api=1&map_action=map&center='+la+','+lo+'&zoom=14&basemap=satellite';
+    rows+='<tr><td><b>'+esc(S.nm)+'</b><div style="font-size:9px;color:var(--muted)">'+esc(S.sub||"")+'</div></td>'
+      +'<td class="num" style="direction:ltr">'+nf(la,3)+', '+nf(lo,3)+'</td>'
+      +'<td><a class="net-btn" style="text-decoration:none" target="_blank" rel="noopener" href="'+earth+'">🌍 إيرث</a></td>'
+      +'<td><a class="net-btn" style="text-decoration:none" target="_blank" rel="noopener" href="'+maps+'">🛰 خرائط</a></td></tr>';
+  }
+  if(!rows) return "";
+  return panel("مواقع المحطات على الخريطة","روابط مباشرة — لا تحتاج فتح بطاقة",
+    '<div class="tb-wrap"><table class="tb"><thead><tr><th>المحطة</th><th>الإحداثى</th>'
+    +'<th>جوجل إيرث</th><th>خرائط جوجل</th></tr></thead><tbody>'+rows+'</tbody></table></div>',
+    'الإحداثى هنا هو <b>موقع المحطة الفعلى</b> لا خلية النموذج المثبَّتة — حتى لا يُظنّ أن موضع خلية GloFAS هو موضع المحطة.');
+}
 function netDetail(){
   var id=ST.net.sel; if(!id) return "";
   var S=stn(id); if(!S) return "";
@@ -1948,7 +1992,8 @@ function netBind(){
     return { x:vb[0]+(ev.clientX-r.left)/r.width*vb[2], y:vb[1]+(ev.clientY-r.top)/r.height*vb[3] }; }
   wrap.onpointerdown=function(ev){ ptrs[ev.pointerId]=ev; wrap.setPointerCapture(ev.pointerId);
     var ks=Object.keys(ptrs);
-    if(ks.length===1){ panStart={cx:ev.clientX, cy:ev.clientY, vb:netVB().slice()}; }
+    if(ks.length===1){ panStart={cx:ev.clientX, cy:ev.clientY, vb:netVB().slice(),
+                                 t:Date.now(), moved:false}; }
     else if(ks.length===2){ panStart=null;
       var a=ptrs[ks[0]], b=ptrs[ks[1]];
       pinch0={d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY), vb:netVB().slice(),
@@ -1957,6 +2002,7 @@ function netBind(){
   wrap.onpointermove=function(ev){ if(!ptrs[ev.pointerId]) return; ptrs[ev.pointerId]=ev;
     var ks=Object.keys(ptrs), r=wrap.getBoundingClientRect();
     if(ks.length===1 && panStart){ var vb=panStart.vb.slice();
+      if(Math.abs(ev.clientX-panStart.cx)>6 || Math.abs(ev.clientY-panStart.cy)>6) panStart.moved=true;
       vb[0]-= (ev.clientX-panStart.cx)/r.width*vb[2];
       vb[1]-= (ev.clientY-panStart.cy)/r.height*vb[3];
       netSetVB(vb);
@@ -1967,7 +2013,27 @@ function netBind(){
         vb[0]+=fx*vb[2]*(1-f); vb[1]+=fy*vb[3]*(1-f); vb[2]*=f;
         netSetVB(vb); } }
   };
-  wrap.onpointerup=wrap.onpointercancel=function(ev){ delete ptrs[ev.pointerId];
+  /* النقرة على العقدة: التقاط المؤشر (اللازم للسحب) يحوّل حدث click إلى الحاوية
+     فلا يصل إلى مجموعة المحطة إطلاقاً — وهو سبب عدم فتح البطاقة بالماوس.
+     الحل: نميّز النقرة بأنفسنا (إزاحة < ٦ بكسل وزمن < ٦٠٠ م.ث) ثم نستدلّ على
+     العنصر بموضعه بعد تحرير الالتقاط. */
+  wrap.onpointerup=function(ev){
+    var wasTap = panStart && !panStart.moved && (Date.now()-panStart.t)<600
+                 && Object.keys(ptrs).length===1;
+    delete ptrs[ev.pointerId];
+    if(Object.keys(ptrs).length===0){ panStart=null; pinch0=null; }
+    if(!wasTap) return;
+    try{ wrap.releasePointerCapture(ev.pointerId); }catch(e){}
+    var el=null, g=null;
+    try{ el=document.elementFromPoint(ev.clientX, ev.clientY); }catch(e2){}
+    if(el && el.closest) g=el.closest(".net-node");
+    if(!g) return;
+    var id=g.getAttribute("data-node");
+    if(!id) return;
+    ST.net.sel=(ST.net.sel===id)?null:id;
+    render();
+  };
+  wrap.onpointercancel=function(ev){ delete ptrs[ev.pointerId];
     if(Object.keys(ptrs).length===0){ panStart=null; pinch0=null; } };
   wrap.ondblclick=function(){ netSetVB([0,0,680,540]); };
   wrap.onwheel=function(ev){ ev.preventDefault(); var vb=netVB().slice(), r=wrap.getBoundingClientRect();
@@ -3166,7 +3232,7 @@ function secNetwork(){
   var s=panel("مخطط المجارى التفاعلى","اسحب للتحريك · قرّب بإصبعين · انقر محطة للتفاصيل · حرّك شريط الزمن عبر التنبؤ",
     toolbar
     +'<div id="net-wrap">'+networkSVG()+'</div>'
-    +'<div id="net-detail">'+netDetail()+'</div>'
+    +'<div id="net-detail">'+netDetail()+netLinks()+'</div>'
     +'<div class="legend"><span><i style="background:#247ba0"></i>النيل الأزرق</span>'
     +'<span><i style="background:#4d7c5a"></i>النيل الأبيض</span>'
     +'<span><i style="background:#b46f4b"></i>عطبرة</span>'
