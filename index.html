@@ -192,6 +192,8 @@ table.tb tr.hi td{background:#f2f7f4}
 .net-btn.on{background:#155b75; color:#fff; border-color:#155b75}
 #net-detail .spark-fut{stroke-dasharray:4 4}
 @media (prefers-reduced-motion: reduce){ .flow{animation:none !important} }
+.rain-cell{cursor:pointer}
+.inp{width:78px;border:1px solid #d8d2c2;border-radius:8px;padding:5px 8px;font-family:inherit;font-size:13px;direction:ltr;text-align:center}
 </style>
 </head>
 <body>
@@ -206,7 +208,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.37</small>
+      <small id="buildtag">build 2.38</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -701,7 +703,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.37";
+var BUILD = "2.38";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -749,6 +751,7 @@ var SECTIONS = [
   {id:"compose",  icon:"▤", eyebrow:"التراكب الكمى",         title:"مِمّ يتكوّن الوارد؟"},
   {id:"network",  icon:"⑂", eyebrow:"شبكة الحوض",           title:"الاتزان الحجمى المزاح زمنياً"},
   {id:"routing",  icon:"➟", eyebrow:"التتبّع والمعايرة",     title:"ماسكينجم ومعمل المعايرة"},
+  {id:"whatif",   icon:"⚗", eyebrow:"صندوق السيناريوهات",    title:"ماذا لو؟ — حقن اضطراب وتتبّعه"},
   {id:"rain",     icon:"☂", eyebrow:"المنابع",              title:"الأمطار على أحواض التغذية"},
   {id:"sar",      icon:"◎", eyebrow:"Sentinel-1 رادار",      title:"مرصد الأقمار — المسطحات المائية"},
   {id:"clim",     icon:"◫", eyebrow:"المقارنة التاريخية",    title:"موقع الموسم من ٢٠ سنة"},
@@ -781,6 +784,8 @@ var ST = {
   calH:{ year:2020, H:null, res:null, loading:false },
   cert:{ url:null, busy:false },
   net:{ day:null, sel:null, vb:null, anim:true, playing:null },
+  wi:{ src:"eldiem", mode:"pulse", dq:2000, dur:5, start:1, pct:25, res:null },
+  rw:{ day:null, mode:7, sel:null, playing:null },
   pwa:{ prompt:null, evtFired:false, installed:false, diag:null, running:false },
   stamp:null
 };
@@ -2251,8 +2256,9 @@ function rainMapSVG(a, b){
     }
     var B2=basinOf(c2.b), st=B2? B2.step : 0.6;
     var x1=X(c2.lon-st/2), x2=X(c2.lon+st/2), y1=Y(c2.lat+st/2), y2=Y(c2.lat-st/2);
-    s+='<rect x="'+x1.toFixed(1)+'" y="'+y1.toFixed(1)+'" width="'+Math.abs(x2-x1).toFixed(1)
-      +'" height="'+Math.abs(y2-y1).toFixed(1)+'" fill="'+rainColor(sum)+'" stroke="#ffffff" stroke-width=".6"/>';
+    var selc=(ST.rw.sel===i);
+    s+='<rect id="rc-'+i+'" class="rain-cell" data-cell="'+i+'" x="'+x1.toFixed(1)+'" y="'+y1.toFixed(1)+'" width="'+Math.abs(x2-x1).toFixed(1)
+      +'" height="'+Math.abs(y2-y1).toFixed(1)+'" fill="'+rainColor(sum)+'" stroke="'+(selc?'#b8503f':'#ffffff')+'" stroke-width="'+(selc?'2.2':'.6')+'"/>';
   }
 
   /* مراكز ثقل المطر */
@@ -3257,6 +3263,181 @@ function secRouting(){
 }
 
 /* ---- 7. الأمطار الحوضية ---- */
+/* ═════ صندوق «ماذا لو» — حقن اضطراب افتراضى وتتبّعه بماسكينجم المعايَر ═════ */
+function wiModified(){
+  var E=ST.q.eldiem.q.slice(), J=ST.q.jaulia.q.slice(), A=ST.q.atbara.q.slice();
+  var tgt = (ST.wi.src==="jaulia")? J : (ST.wi.src==="atbara")? A : E;
+  var n0=nowIdx(), st=Math.max(0, n0+(+ST.wi.start||0)), i, L=tgt.length;
+  if(ST.wi.mode==="pulse"){
+    var en=Math.min(L, st+Math.max(1,+ST.wi.dur||1));
+    for(i=st;i<en;i++) if(tgt[i]!==null&&!isNaN(tgt[i])) tgt[i]+= (+ST.wi.dq||0);
+  } else {
+    var f=1+((+ST.wi.pct||0)/100);
+    for(i=st;i<L;i++) if(tgt[i]!==null&&!isNaN(tgt[i])) tgt[i]*=f;
+  }
+  return {E:E,J:J,A:A,startIdx:st};
+}
+function wiCompute(){
+  if(!ST.q) return null;
+  var base=routeSystem(ST.q.eldiem.q, ST.q.jaulia.q, ST.q.atbara.q, ST.reaches);
+  var M=wiModified();
+  var scn=routeSystem(M.E, M.J, M.A, ST.reaches);
+  var t=ST.q.eldiem.t, n0=nowIdx(), i;
+  function pk(arr){ var bi=-1,bv=-1e18; for(i=n0;i<arr.length;i++){ var v=arr[i];
+    if(v!==null&&!isNaN(v)&&v>bv){bv=v;bi=i;} } return {v:bv,i:bi}; }
+  function firstX(arr,thr){ if(thr===null||thr===undefined) return null;
+    for(i=n0;i<arr.length;i++){ var v=arr[i]; if(v!==null&&!isNaN(v)&&v>=thr) return i; } return null; }
+  var pb=pk(base.halfa), ps=pk(scn.halfa);
+  var dmax=-1e18, di=-1;
+  for(i=n0;i<base.halfa.length;i++){ var d=(scn.halfa[i]||0)-(base.halfa[i]||0);
+    if(d>dmax){dmax=d;di=i;} }
+  var thrB=ST.thr?ST.thr.b:null, thrC=ST.thr?ST.thr.c:null;
+  return { t:t, n0:n0, base:base, scn:scn,
+    pkB:pb, pkS:ps, dPk:ps.v-pb.v, dPkPct:(pb.v>0?(ps.v-pb.v)/pb.v*100:null),
+    arrIdx:di, arrGain:dmax,
+    xbB:firstX(base.halfa,thrB), xbS:firstX(scn.halfa,thrB),
+    xcB:firstX(base.halfa,thrC), xcS:firstX(scn.halfa,thrC),
+    dAt:{ atbara: pk(scn.atConf).v-pk(base.atConf).v,
+          dongola: pk(scn.dongola).v-pk(base.dongola).v } };
+}
+function wiPlot(R){
+  var w=680,h=300,mL=58,mR=14,mT=16,mB=34;
+  var a=Math.max(0,R.n0-7), b=R.t.length-1, i;
+  var lo=1e18,hi=-1e18;
+  function scan(arr){ for(i=a;i<=b;i++){ var v=arr[i]; if(v!==null&&!isNaN(v)){ if(v<lo)lo=v; if(v>hi)hi=v; } } }
+  scan(R.base.halfa); scan(R.scn.halfa);
+  if(ST.thr){ if(ST.thr.b<lo)lo=ST.thr.b; if(ST.thr.c>hi)hi=ST.thr.c; }
+  var pad=(hi-lo)*0.08||1; lo=Math.max(0,lo-pad); hi+=pad;
+  function X(k){ return mL+(k-a)/(b-a||1)*(w-mL-mR); }
+  function Y(v){ return mT+(1-(v-lo)/(hi-lo))*(h-mT-mB); }
+  function path(arr){ var d="",on=false;
+    for(i=a;i<=b;i++){ var v=arr[i];
+      if(v===null||isNaN(v)){on=false;continue;}
+      d+=(on?" L ":"M ")+X(i).toFixed(1)+" "+Y(v).toFixed(1); on=true; } return d; }
+  var sv='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="xMidYMid meet">'
+    +'<rect width="'+w+'" height="'+h+'" fill="#fdfcf8"/>';
+  var g; for(g=0;g<=4;g++){ var vv=lo+(hi-lo)*g/4, yy=Y(vv);
+    sv+='<line x1="'+mL+'" y1="'+yy.toFixed(1)+'" x2="'+(w-mR)+'" y2="'+yy.toFixed(1)+'" stroke="#eee8da"/>'
+      +'<text class="axis-num" x="'+(mL-6)+'" y="'+(yy+4).toFixed(1)+'" text-anchor="end">'+nf(vv,0)+'</text>'; }
+  if(ST.thr){
+    sv+='<line x1="'+mL+'" x2="'+(w-mR)+'" y1="'+Y(ST.thr.b).toFixed(1)+'" y2="'+Y(ST.thr.b).toFixed(1)+'" stroke="#b46f4b" stroke-dasharray="6 4"/>'
+      +'<line x1="'+mL+'" x2="'+(w-mR)+'" y1="'+Y(ST.thr.c).toFixed(1)+'" y2="'+Y(ST.thr.c).toFixed(1)+'" stroke="#b8503f" stroke-dasharray="6 4"/>';
+  }
+  sv+='<line x1="'+X(R.n0).toFixed(1)+'" x2="'+X(R.n0).toFixed(1)+'" y1="'+mT+'" y2="'+(h-mB)+'" stroke="#c9a84c" stroke-width="1.5"/>'
+    +'<text class="axis-num" x="'+X(R.n0).toFixed(1)+'" y="'+(h-mB+16)+'" text-anchor="middle">اليوم</text>';
+  sv+='<path d="'+path(R.base.halfa)+'" fill="none" stroke="#155b75" stroke-width="2.4"/>'
+    +'<path d="'+path(R.scn.halfa)+'" fill="none" stroke="#b8503f" stroke-width="2.4" stroke-dasharray="8 4"/>';
+  sv+='</svg>';
+  return sv;
+}
+function secWhatif(){
+  if(!ST.q) return panel("ماذا لو؟","جارٍ تحميل السلاسل", skel(4));
+  var srcs=[["eldiem","الديم (الأزرق)"],["jaulia","الأبيض"],["atbara","عطبرة"]];
+  var bs="", i;
+  for(i=0;i<srcs.length;i++) bs+='<button class="net-btn'+(ST.wi.src===srcs[i][0]?" on":"")+'" data-wisrc="'+srcs[i][0]+'">'+srcs[i][1]+'</button>';
+  var mm='<button class="net-btn'+(ST.wi.mode==="pulse"?" on":"")+'" data-wimode="pulse">نبضة تصريف</button>'
+      +'<button class="net-btn'+(ST.wi.mode==="pct"?" on":"")+'" data-wimode="pct">زيادة نسبية</button>';
+  var inputs;
+  if(ST.wi.mode==="pulse")
+    inputs='<label>الحجم <input class="inp" id="wi-dq" type="number" step="100" value="'+(+ST.wi.dq)+'"> م³/ث</label>'
+      +'<label>المدة <input class="inp" id="wi-dur" type="number" min="1" max="20" value="'+(+ST.wi.dur)+'"> يوم</label>'
+      +'<label>تبدأ بعد <input class="inp" id="wi-start" type="number" min="0" max="20" value="'+(+ST.wi.start)+'"> يوم</label>';
+  else
+    inputs='<label>النسبة <input class="inp" id="wi-pct" type="number" step="5" value="'+(+ST.wi.pct)+'"> ٪</label>'
+      +'<label>تبدأ بعد <input class="inp" id="wi-start" type="number" min="0" max="20" value="'+(+ST.wi.start)+'"> يوم</label>';
+  var s=panel("تكوين السيناريو","اختر المصدر ونوع الاضطراب ثم شغّل التتبّع",
+    '<div class="net-toolbar">'+bs+'</div>'
+    +'<div class="net-toolbar">'+mm+'</div>'
+    +'<div class="net-toolbar" style="gap:14px">'+inputs+'</div>'
+    +'<div class="actions"><button class="btn solid" id="wi-run">⚗ شغّل السيناريو</button>'
+    +(ST.wi.res?'<button class="btn" id="wi-clear">مسح</button>':"")+'</div>',
+    '<b>سيناريو افتراضى</b>: يُحقن الاضطراب فى هيدروغراف المصدر ويُتتبَّع بماسكينجم بمعاملات المعايرة الحالية نفسها. '
+    +'لا يمثّل قرارات تشغيل فعلية لأى منشأة، ولا يضيف فيزياء جديدة — أداة تدريب واستشعار حساسية.');
+  if(ST.wi.res){
+    var R=wiCompute();
+    if(R){
+      var arrD=(R.arrIdx>=0)? (R.arrIdx-R.n0) : null;
+      s+=panel("حلفا: الأساس مقابل السيناريو","الخط المتصل أساس · المتقطع سيناريو · الذهبى اليوم · المتقطعان الأفقيان تأهّب/إنذار",
+        '<div class="chart-box">'+wiPlot(R)+'</div>'
+        +'<div class="legend"><span><i style="background:#155b75"></i>الأساس</span>'
+        +'<span><i style="background:#b8503f"></i>السيناريو</span></div>');
+      var rows='<div class="grid g3" style="margin-top:4px">'
+        +kpi("Δ", R.dPk>=0?"sand":"green", "تغيّر ذروة حلفا", nf(R.dPk,0), "م³/ث", (R.dPkPct!==null? nf(R.dPkPct,1)+"٪":"—")+" · سيناريو")
+        +kpi("⏱","","بلوغ أقصى أثر", arrD!==null? "+"+arrD:"—", "يوم", arrD!==null? dmy(R.t[R.arrIdx]):"")
+        +kpi("⚑", (R.xbS!==null&&R.xbB===null)?"sand":"", "عبور التأهّب",
+           R.xbS!==null? dmy(R.t[R.xbS]) : "لا يعبر",
+           "", "الأساس: "+(R.xbB!==null? dmy(R.t[R.xbB]) : "لا يعبر"))
+        +'</div>';
+      if(ST.thr) rows+='<div class="grid g3" style="margin-top:10px">'
+        +kpi("⚑", (R.xcS!==null)?"red":"", "عبور الإنذار",
+           R.xcS!==null? dmy(R.t[R.xcS]) : "لا يعبر", "",
+           "الأساس: "+(R.xcB!==null? dmy(R.t[R.xcB]) : "لا يعبر"))
+        +kpi("◈","","Δ ذروة بعد ملتقى عطبرة", nf(R.dAt.atbara,0), "م³/ث","سيناريو")
+        +kpi("◈","","Δ ذروة عند دنقلا", nf(R.dAt.dongola,0), "م³/ث","سيناريو")
+        +'</div>';
+      s+=panel("قراءة النتيجة","كل الأرقام مختومة «سيناريو افتراضى»", rows);
+    }
+  }
+  return s;
+}
+/* ═════ تفاعل خريطة الأمطار: زمن + نقر خلية (نمط 2.36) ═════ */
+function rwIdx(){ if(!ST.rain) return RAIN_PAST;
+  /* الافتراضى: نهاية الأسبوع القادم — يطابق العرض القديم */
+  var k=(ST.rw.day===null)? rainNowIdx()+7 : ST.rw.day;
+  return Math.max(0, Math.min(ST.rain.t.length-1, k)); }
+function rwWin(){ var k=rwIdx();
+  return (ST.rw.mode===1)? {a:k,b:k} : {a:Math.max(0,k-6),b:k}; }
+function rwApply(){
+  if(!ST.rain) return;
+  var W=rwWin(), i, j;
+  for(i=0;i<RAIN_CELLS.length;i++){
+    var e=$("rc-"+i); if(!e) continue;
+    var p=ST.rain.P[i], sum=null;
+    if(p){ sum=0; for(j=Math.max(0,W.a); j<=Math.min(p.length-1,W.b); j++)
+      if(p[j]!==null&&!isNaN(p[j])) sum+=p[j]; }
+    e.setAttribute("fill", rainColor(sum));
+  }
+  var lab=$("rw-daylab");
+  if(lab){ var k=rwIdx(), n0=rainNowIdx();
+    lab.textContent=(k===n0?"اليوم · ":"")+dmy(ST.rain.t[k])+(k>n0?" · تنبؤ +"+(k-n0)+"ي":(k<n0?" · قبل "+(n0-k)+"ي":""));
+    lab.className="net-day"+(k>n0?" fut":""); }
+}
+function rwSpark(ci){
+  var p=ST.rain.P[ci]; if(!p) return "";
+  var n0=rainNowIdx(), W=252,H=54,P2=5, i, hi=1;
+  for(i=0;i<p.length;i++) if(p[i]!==null&&!isNaN(p[i])&&p[i]>hi) hi=p[i];
+  function X(i2){ return P2+i2/(p.length-1||1)*(W-2*P2); }
+  function Y(v){ return H-P2-(v/hi)*(H-2*P2); }
+  var bars="";
+  for(i=0;i<p.length;i++){ var v=p[i]; if(v===null||isNaN(v)) continue;
+    bars+='<rect x="'+(X(i)-2.4).toFixed(1)+'" y="'+Y(v).toFixed(1)+'" width="4.8" height="'+(H-P2-Y(v)).toFixed(1)
+      +'" fill="'+(i>n0?"#b46f4b":"#247ba0")+'" opacity="'+(i===rwIdx()?"1":".55")+'"/>';
+  }
+  return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:280px;height:54px">'+bars+'</svg>';
+}
+function rwDetail(){
+  var ci=ST.rw.sel; if(ci===null||ci===undefined||!ST.rain) return "";
+  var c=RAIN_CELLS[ci]; if(!c) return "";
+  var B=basinOf(c.b), p=ST.rain.P[ci], k=rwIdx(), n0=rainNowIdx();
+  var today=(p&&p[k]!==null&&!isNaN(p[k]))? p[k] : null;
+  function ssum(a,b){ if(!p) return null; var s2=0,i;
+    for(i=Math.max(0,a);i<=Math.min(p.length-1,b);i++) if(p[i]!==null&&!isNaN(p[i])) s2+=p[i];
+    return s2; }
+  var lag=B? basinLag(B) : null;
+  return '<div class="panel" style="border-right:4px solid '+(B?B.col:"#247ba0")+'">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center">'
+    +'<b>خلية '+(B?esc(B.nm):"—")+' · '+c.lat.toFixed(2)+'°N، '+c.lon.toFixed(2)+'°E</b>'
+    +'<button class="net-btn" data-rwclose="1">إغلاق ✕</button></div>'
+    +'<div class="grid g3" style="margin:10px 0 6px">'
+    +kpi("☂","","مطر اليوم المعروض", today!==null?nf(today,1):"—","مم",(k>n0?"تنبؤ نموذجى":"تحليل نموذجى"))
+    +kpi("Σ","","الأسبوع المنقضى", nf(ssum(n0-6,n0),1),"مم","تحليل نموذجى")
+    +kpi("Σ","","الأسبوع القادم", nf(ssum(n0+1,n0+7),1),"مم","تنبؤ")
+    +'</div>'
+    +'<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'+rwSpark(ci)
+    +'<small style="color:#7a756a">النافذة كاملة ('+RAIN_PAST+'+'+RAIN_FUT+' يوماً) — البرتقالى تنبؤ والبارز اليوم المعروض</small></div>'
+    +(lag?'<div style="margin-top:8px"><small>زمن وصول أثر مطر هذه الخلية إلى وادى حلفا تقديرياً ~<b>'+nf(lag.toHalfa,0)+' يوماً</b></small></div>':"")
+    +'</div>';
+}
 function secRain(){
   if(!ST.rain) return panel("المنابع","جارٍ تحميل أمطار الأحواض", skel(5));
   var k=rainNowIdx(), ri=rainIndex(), i;
@@ -3282,8 +3463,18 @@ function secRain(){
   }
 
   /* خريطة الخلايا */
-  s+=panel("خريطة الأحواض","كل مربع خلية رصد — اللون شدة المطر المتوقع للأسبوع القادم (مخرج نموذج)",
-    '<div class="chart-box">'+rainMapSVG(k+1, k+7)+'</div>'
+  var _W=rwWin(), _rk=rwIdx(), _rn0=rainNowIdx(), _rlen=(ST.rain.t.length-1);
+  var _rtb='<div class="net-toolbar">'
+    +'<button class="net-btn" id="rw-play" title="تشغيل الزمن">▶</button>'
+    +'<input type="range" id="rw-slider" min="0" max="'+_rlen+'" step="1" value="'+_rk+'">'
+    +'<span class="net-day'+(_rk>_rn0?" fut":"")+'" id="rw-daylab"></span>'
+    +'<button class="net-btn'+(ST.rw.mode===1?" on":"")+'" id="rw-mode1">يوم</button>'
+    +'<button class="net-btn'+(ST.rw.mode!==1?" on":"")+'" id="rw-mode7">٧ أيام</button>'
+    +'</div>';
+  s+=panel("خريطة الأحواض التفاعلية","اللون = مجموع المطر فى النافذة المنتهية باليوم المعروض (مخرج نموذج) — انقر خلية للتفاصيل وحرّك الزمن",
+    _rtb
+    +'<div class="chart-box">'+rainMapSVG(_W.a, _W.b)+'</div>'
+    +'<div id="rw-detail">'+rwDetail()+'</div>'
     + '<div class="legend">'
     + '<span><i style="background:#eef2ea"></i>&lt; 5 مم</span>'
     + '<span><i style="background:#cfe0d2"></i>5–20</span>'
@@ -4356,6 +4547,58 @@ function certShare(){
     netErr("المشاركة غير مدعومة على هذا المتصفح — استخدم زر التنزيل", new Error("Web Share files غير متاح"));
   }
 }
+/* ═════ النشرة التنفيذية اليومية — قوالب حتمية لا توليد حر ═════ */
+function bulletinText(){
+  var L=[], q=cur("halfa"), lvl=(q!==null&&ST.thr)?alertLevel(q):null;
+  var ens=runEnsemble(), stB=(ens&&ST.thr)?ensembleThresholdStats(ens,ST.thr.b):null;
+  L.push("مذكرة الموقف اليومى — منظومة مِرقاب النيل");
+  L.push("التاريخ: "+todayISO()+"  ·  build "+BUILD);
+  L.push("");
+  L.push("أولاً — الموقف الحالى:");
+  if(q!==null) L.push("الوارد المُنمذَج لبحيرة ناصر عند وادى حلفا "+nf(q,0)+" م³/ث، والحالة «"+(lvl?lvl.nm:"—")+"» وفق عتبات "+(ST.thrBasis==="recent"?"آخر خمس سنوات":"الأرشيف الكامل")+".");
+  else L.push("سلاسل التصرف غير محمَّلة بعد.");
+  var os=operationalSentence(); if(os) L.push(os);
+  L.push("");
+  L.push("ثانياً — النظرة الاحتمالية:");
+  if(stB) L.push("احتمال تجاوز عتبة التأهّب خلال نافذة التنبؤ "+nf(stB.prob,0)+"٪ من أعضاء المروحة المُتتبَّعة ("+NMEM+" عضواً).");
+  else L.push("المروحة الاحتمالية غير متاحة حالياً.");
+  var ri=rainIndex();
+  if(ri) L.push("مؤشر مطر الأحواض الموزون: "+nf(ri.past7,1)+" مم (الأسبوع المنقضى) مقابل "+nf(ri.next7,1)+" مم (المتوقع) — "+(ri.next7>ri.past7*1.4?"تصاعد يستوجب المتابعة":(ri.next7<ri.past7*0.7?"انحسار":"استقرار نسبى"))+".");
+  L.push("");
+  L.push("ثالثاً — التأكيد المستقل من الفضاء:");
+  var sg=null; try{ sg=(ST.sar&&ST.sar.data&&ST.sar.data.shendi)? sarAgreement("shendi") : null; }catch(e){}
+  if(sg&&sg.r!==null&&!isNaN(sg.r)) L.push("رادار Sentinel-1 (سهل شندى الفيضى): ارتباط المسطح المائى بالتصرف r="+nf(sg.r,2)+" على "+sg.n+" نقطة — تأكيد "+sg.level.g+".");
+  else L.push("طبقة الرادار غير محمَّلة فى هذه الجلسة.");
+  var ad=ST.alti&&ST.alti.data&&ST.alti.data.gerd, as2=null;
+  try{ as2=altiStats("gerd"); }catch(e){}
+  if(ad&&ad.series&&ad.series.length){ var last=ad.series[ad.series.length-1];
+    var tr=(as2&&as2.d30!==null&&as2.d30!==undefined)? (as2.d30>0.15?" (اتجاه صاعد ~"+nf(as2.d30,1)+" م/٣٠ يوماً)":(as2.d30<-0.15?" (اتجاه هابط ~"+nf(as2.d30,1)+" م/٣٠ يوماً)":" (شبه مستقر)")) : "";
+    L.push("ألتيمترى DAHITI: منسوب بحيرة سد النهضة "+nf(last.v,2)+" م بتاريخ "+last.t+tr+".");
+  } else L.push("طبقة الألتيمترى غير محمَّلة فى هذه الجلسة.");
+  L.push("");
+  L.push("رابعاً — التوصية:");
+  var k=lvl?lvl.k:0;
+  if(k>=2) L.push("تفعيل غرفة العمليات ورفع وتيرة الرصد إلى كل ست ساعات، ومراجعة جاهزية المفيضات والتشوين، وإخطار الإدارات المعنية بمسار الموجة وأزمنة الوصول.");
+  else if(k===1) L.push("رفع وتيرة متابعة المناسيب إلى مرتين يومياً، ومراجعة جاهزية منشآت التحكم، مع متابعة مطر الحوض الأزرق يومياً.");
+  else L.push("استمرار الرصد الدورى المعتاد؛ لا إجراءات استثنائية.");
+  L.push("");
+  L.push("تنويه: الأرقام أعلاه مخرجات نمذجة GloFAS وتنبؤ احتمالى وقياسات فضائية — وليست قياسات أرضية معتمدة، ولا تحل محل بيانات محطات الرصد الرسمية.");
+  L.push("");
+  L.push("الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة — مِرقاب النيل");
+  return L.join("\n");
+}
+function bulletinCopy(){
+  var t=bulletinText();
+  if(navigator.clipboard&&navigator.clipboard.writeText)
+    navigator.clipboard.writeText(t).then(function(){ auditLog("نسخ النشرة اليومية",""); }).catch(function(){});
+  else{ var ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+    try{ document.execCommand("copy"); }catch(e){} document.body.removeChild(ta); }
+}
+function bulletinShare(){
+  var t=bulletinText();
+  if(navigator.share) navigator.share({title:"مذكرة الموقف اليومى — مِرقاب النيل", text:t}).catch(function(){});
+  else bulletinCopy();
+}
 function secCert(){
   var s=panel("النشرة","شهادة الرصد المستقل — بضغطة واحدة",
     '<div class="actions"><button class="btn solid" id="cert-make"'+(ST.cert.busy?" disabled":"")+'>'
@@ -4366,6 +4609,13 @@ function secCert(){
     'بطاقة واحدة تجمع: منحنى حلفا والعتبات، وتأكيد رادار شندى المستقل (r)، ومنسوب سد النهضة بالألتيمترى، ومطر الأحواض — '
     +'<b>كل طبقة غير محمَّلة تُكتب «غير محمَّل» ولا يُختلق لها رقم</b>. للحصول على شهادة كاملة: '
     +'افتح أقسام الرادار والألتيمترى أولاً حتى تُحمَّل طبقاتها ثم أصدرها.');
+  var bt=bulletinText();
+  s+=panel("المذكرة التنفيذية اليومية","قوالب حتمية من أرقام اللوحة — لا نص مولَّداً حراً",
+    '<div style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:16px 18px;white-space:pre-wrap;font-size:13.5px;line-height:1.9">'+esc(bt)+'</div>'
+    +'<div class="actions" style="margin-top:12px">'
+    +'<button class="btn solid" id="blt-share">⇪ مشاركة نصية</button>'
+    +'<button class="btn" id="blt-copy">⧉ نسخ</button></div>',
+    'كل سطر يُبنى من نفس أرقام الأقسام بقالب ثابت؛ الطبقات غير المحمَّلة تُذكر باسمها بلا اختلاق. حمّل الرادار والألتيمترى أولاً لمذكرة كاملة.');
   if(ST.cert.url)
     s+=panel("المعاينة","هذه هى الصورة التى ستُشارك",
       '<img src="'+ST.cert.url+'" alt="شهادة الرصد" style="width:100%;max-width:560px;border:1px solid var(--line);border-radius:8px;display:block;margin:0 auto">');
@@ -4381,6 +4631,7 @@ function render(){
   else if(ST.sec==="compose")  h=secCompose();
   else if(ST.sec==="network")  h=secNetwork();
   else if(ST.sec==="routing")  h=secRouting();
+  else if(ST.sec==="whatif")   h=secWhatif();
   else if(ST.sec==="rain")     h=secRain();
   else if(ST.sec==="sar")      h=secSar();
   else if(ST.sec==="clim")     h=secClim();
@@ -4428,6 +4679,52 @@ function bindControls(){
       var id=this.getAttribute("data-node");
       ST.net.sel=(ST.net.sel===id)?null:id; render(); }; });
     each("[data-netclose]",function(b){ b.onclick=function(){ ST.net.sel=null; render(); }; });
+  }
+
+  if(ST.sec==="whatif"){
+    each("[data-wisrc]",function(b){ b.onclick=function(){ ST.wi.src=this.getAttribute("data-wisrc"); render(); }; });
+    each("[data-wimode]",function(b){ b.onclick=function(){ ST.wi.mode=this.getAttribute("data-wimode"); render(); }; });
+    function wiRead(){
+      if($("wi-dq"))    ST.wi.dq=+$("wi-dq").value;
+      if($("wi-dur"))   ST.wi.dur=+$("wi-dur").value;
+      if($("wi-start")) ST.wi.start=+$("wi-start").value;
+      if($("wi-pct"))   ST.wi.pct=+$("wi-pct").value;
+    }
+    var wr=$("wi-run");
+    if(wr) wr.onclick=function(){ wiRead(); ST.wi.res=true;
+      auditLog("سيناريو ماذا لو", ST.wi.src+"/"+ST.wi.mode); render(); };
+    var wc=$("wi-clear");
+    if(wc) wc.onclick=function(){ ST.wi.res=null; render(); };
+  }
+
+  if(ST.sec==="rain" && ST.rain){
+    var rs=$("rw-slider");
+    if(rs){
+      rs.oninput=function(){ ST.rw.day=+this.value; rwApply(); };
+      rs.onchange=function(){ render(); };
+    }
+    var rp=$("rw-play");
+    if(rp) rp.onclick=function(){
+      if(ST.rw.playing){ clearInterval(ST.rw.playing); ST.rw.playing=null; rp.textContent="▶"; return; }
+      rp.textContent="⏸";
+      ST.rw.playing=setInterval(function(){
+        var k=rwIdx()+1;
+        if(k>=ST.rain.t.length){ clearInterval(ST.rw.playing); ST.rw.playing=null; rp.textContent="▶"; return; }
+        ST.rw.day=k; if(rs) rs.value=k; rwApply();
+      }, 420);
+    };
+    var m1=$("rw-mode1"), m7=$("rw-mode7");
+    if(m1) m1.onclick=function(){ ST.rw.mode=1; render(); };
+    if(m7) m7.onclick=function(){ ST.rw.mode=7; render(); };
+    each(".rain-cell",function(rc){ rc.onclick=function(){
+      var ci=+this.getAttribute("data-cell");
+      ST.rw.sel=(ST.rw.sel===ci)?null:ci; render(); }; });
+    each("[data-rwclose]",function(b){ b.onclick=function(){ ST.rw.sel=null; render(); }; });
+  }
+
+  if(ST.sec==="cert"){
+    var bc=$("blt-copy");  if(bc) bc.onclick=bulletinCopy;
+    var bh=$("blt-share"); if(bh) bh.onclick=bulletinShare;
   }
 
   each("[data-rk],[data-rx],[data-rn]",function(b){
@@ -4656,6 +4953,7 @@ function buildNav(){
 }
 function selectSection(id){
   if(ST.net.playing){ clearInterval(ST.net.playing); ST.net.playing=null; }
+  if(ST.rw.playing){ clearInterval(ST.rw.playing); ST.rw.playing=null; }
   var sec=null,i;
   for(i=0;i<SECTIONS.length;i++) if(SECTIONS[i].id===id) sec=SECTIONS[i];
   if(!sec) return;
