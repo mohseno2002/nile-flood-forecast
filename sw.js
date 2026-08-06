@@ -1,6 +1,7 @@
 /* مِرقاب الفيضان — Service Worker */
-var VERSION = "nile-flood-forecast-v2.31";
-var SHELL = ["./", "./index.html", "./manifest.json"];
+var VERSION = "nile-flood-forecast-v2.32";
+var SHELL = ["./", "./index.html", "./manifest.json",
+             "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png"];
 /* استثناء إلزامى: نطاقات البيانات الحية لا تدخل الكاش إطلاقاً (no-store)
    — عرض قراءة مخزّنة قديمة على أنها تصرف اليوم خطأ تشغيلى جسيم. */
 var NETWORK_ONLY = ["open-meteo.com", "flood-api", "api.open-meteo", "firebasedatabase.app", "dataspace.copernicus.eu", "googleapis.com", "gstatic.com"];
