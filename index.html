@@ -208,7 +208,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.38</small>
+      <small id="buildtag">build 2.40</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -703,7 +703,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.38";
+var BUILD = "2.40";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -760,6 +760,7 @@ var SECTIONS = [
   {id:"skill",    icon:"◷", eyebrow:"الرقابة الذاتية",       title:"سجل أداء التنبؤ"},
   {id:"sources",  icon:"❐", eyebrow:"الشفافية",             title:"المصادر والمنهجية والحدود"},
   {id:"alti",     icon:"≋", eyebrow:"الألتيمترى",           title:"مناسيب البحيرات من المدارات"},
+  {id:"dam",      icon:"⛬", eyebrow:"تشغيل الخزانات",       title:"صافى الإطلاق من الألتيمترى"},
   {id:"cert",     icon:"✦", eyebrow:"النشرة",               title:"شهادة الرصد المستقل"},
   {id:"install",  icon:"⤓", eyebrow:"التثبيت",              title:"تثبيت التطبيق وتشخيصه"}
 ];
@@ -781,6 +782,8 @@ var ST = {
   user:"", audit:{}, reachesPrev:null,
   sar:{ data:{}, loading:null, credSrc:null, sel:"shendi" },
   alti:{ data:{}, loading:false, sel:"gerd", keyOk:null },
+  dam:{ sel:"gerd", nat:null, natLoading:false, evap:5 },
+  obsBulk:null,
   calH:{ year:2020, H:null, res:null, loading:false },
   cert:{ url:null, busy:false },
   net:{ day:null, sel:null, vb:null, anim:true, playing:null },
@@ -2652,9 +2655,16 @@ function buildLogEntry(){
 }
 function evaluateLog(){
   if(!ST.q) return [];
-  var d=ST.q.halfa, out=[], keys=Object.keys(ST.log||{}).sort(), i, h;
-  function actualOn(iso){
-    var j; for(j=0;j<d.t.length;j++) if(d.t[j]===iso) return d.q[j];
+  var d=ST.q.halfa, out=[], keys=Object.keys(ST.log||{}).sort(), i;
+  var O=(ST.obs&&ST.obs.halfa)?ST.obs.halfa:{};
+  function dnum(iso){ var p=String(iso).split("-"); return Math.floor(Date.UTC(+p[0],+p[1]-1,+p[2])/864e5); }
+  function idxOf(iso){ var j; for(j=0;j<d.t.length;j++) if(d.t[j]===iso) return j; return -1; }
+  /* الحقيقة: القياس الميدانى إن وُجد لنفس اليوم، وإلا قيمة المنظومة اللاحقة */
+  function truthOn(iso){
+    var r=O[iso];
+    if(r&&typeof r.q==="number") return {v:r.q, src:"obs"};
+    var j=idxOf(iso);
+    if(j>=0&&d.q[j]!==null&&!isNaN(d.q[j])) return {v:d.q[j], src:"model"};
     return null;
   }
   function addDays(iso,n){
@@ -2665,13 +2675,45 @@ function evaluateLog(){
   for(i=0;i<keys.length;i++){
     var e=ST.log[keys[i]];
     if(!e||!e.date) continue;
-    var row={date:e.date, q0:e.q0};
+    var row={date:e.date, q0:e.q0, peakFc:e.peak, peakDateFc:e.peakDate};
     [[3,"f3"],[7,"f7"],[14,"f14"]].forEach(function(pr){
-      var act=actualOn(addDays(e.date,pr[0])), fc=e[pr[1]];
-      row["a"+pr[0]]=act;
-      row["e"+pr[0]]=(act&&fc)? (fc-act)/act*100 : null;
+      var T=truthOn(addDays(e.date,pr[0])), fc=e[pr[1]];
+      row["a"+pr[0]]=T?T.v:null;
+      row["s"+pr[0]]=T?T.src:null;
+      row["f"+pr[0]]=(fc===undefined||fc===null||isNaN(fc))?null:fc;
+      row["e"+pr[0]]=(T&&T.v&&row["f"+pr[0]]!==null)? (row["f"+pr[0]]-T.v)/T.v*100 : null;
     });
+    /* خطأ الذروة وتوقيتها — لا يُقيَّم إلا بعد اكتمال ثلاثين يوماً داخل السلسلة المتاحة */
+    row.pk=null;
+    var i0=idxOf(e.date), k=nowIdx(), j2, bi=-1;
+    if(i0>=0 && e.peak && e.peakDate && (k-i0)>=30){
+      for(j2=i0;j2<=Math.min(i0+30,k);j2++)
+        if(d.q[j2]!==null&&!isNaN(d.q[j2])&&(bi<0||d.q[j2]>d.q[bi])) bi=j2;
+      if(bi>=0) row.pk={ vAct:d.q[bi], tAct:d.t[bi], vFc:e.peak, tFc:e.peakDate,
+        dQ: d.q[bi]? (e.peak-d.q[bi])/d.q[bi]*100 : null,
+        dT: dnum(e.peakDate)-dnum(d.t[bi]) };
+    }
     out.push(row);
+  }
+  return out;
+}
+/* مقاييس الدقة لكل أفق — NSE/KGE/RMSE/PBIAS عبر FIT (إحصاء لا هيدروليكا) */
+function logSkill(){
+  var rows=evaluateLog(), HS=[3,7,14], out=[], k, i;
+  for(k=0;k<HS.length;k++){
+    var h=HS[k], A=[], F=[], sgn=[], nObs=0;
+    for(i=0;i<rows.length;i++){
+      var a=rows[i]["a"+h], f=rows[i]["f"+h];
+      if(a===null||a===undefined||f===null||f===undefined||isNaN(a)||isNaN(f)||!a) continue;
+      A.push(a); F.push(f); sgn.push((f-a)/a*100);
+      if(rows[i]["s"+h]==="obs") nObs++;
+    }
+    var m=(A.length>=3)? FIT.metrics(A,F,0,A.length-1) : null;
+    var ab=0; for(i=0;i<sgn.length;i++) ab+=Math.abs(sgn[i]);
+    out.push({ h:h, n:A.length, nObs:nObs, m:m,
+      mae: sgn.length? ab/sgn.length : null,
+      bias: sgn.length? FIT.mean(sgn) : null,
+      grade: m? FIT.grade(m.KGE) : null });
   }
   return out;
 }
@@ -3818,9 +3860,21 @@ function secObs(){
     +'<label>التصرف المقيس (م³/ث)</label><input type="number" step="1" id="ob-q" placeholder="مثال 10500">'
     +'<button class="btn solid mini" id="ob-save">حفظ القياس</button></div>';
 
-  s=panel("إدخال قياس ميدانى","يُحفظ فى قاعدة الإدارة ويُقيَّد باسم المُدخِل", s+form,
+  var bulk='<div class="ctrl" style="align-items:flex-start;flex-wrap:wrap">'
+    +'<label>المحطة</label><select id="obb-st">'+opts+'</select>'
+    +'<textarea id="obb-txt" rows="4" placeholder="سطر لكل قياس:  2026-07-15, 10500" '
+    +'style="min-width:220px;flex:1;font-family:inherit;direction:ltr;text-align:left;padding:8px;'
+    +'border:1px solid var(--line);border-radius:8px"></textarea>'
+    +'<button class="btn solid mini" id="obb-save">حفظ الدفعة</button></div>';
+  if(ST.obsBulk)
+    bulk+='<div class="banner '+(ST.obsBulk.bad?"warn":"ok")+'"><span>'+(ST.obsBulk.bad?"⚠":"✓")+'</span><div>'
+      +'قُبل <b>'+ST.obsBulk.ok+'</b> قياساً'+(ST.obsBulk.bad? (' ورُفض <b>'+ST.obsBulk.bad+'</b> سطراً: '+esc(ST.obsBulk.why)) : '')
+      +'</div></div>';
+
+  s=panel("إدخال قياس ميدانى","فردياً أو دفعة واحدة — يُقيَّد باسم المُدخِل", s+form+bulk,
     'شروط اعتماد التصحيح: <b>'+OBS_MIN_N+' قياسات صالحة فأكثر</b> · خلال <b>'+OBS_MAX_AGE_D+' يوماً</b> · '
     +'موزّعة على مدى تصرفات لا نقطة واحدة (أقصى/أدنى ≥ '+OBS_MIN_SPAN.toFixed(2)+'×) · بعد رفض الشواذّ (|z| > 2). '
+    +'<b>الإدخال الجماعى</b> يقبل سطراً لكل قياس بصيغة «تاريخ، تصرف» — والتاريخ إما 2026-07-15 أو 15/07/2026، والفاصل فاصلة أو مسافة أو تبويب. '
     +'وعند اكتمالها يُبنى <b>منحنى تصحيح خطى</b> (مقيس = a·نموذج + b) لا معامل نسبة ثابت.');
 
   /* حالة كل محطة */
@@ -4025,7 +4079,7 @@ function auditPanel(){
 
 function secSkill(){
   if(!ST.q) return panel("سجل الأداء","جارٍ التحميل", skel(4))+auditPanel();
-  var rows=evaluateLog();
+  var rows=evaluateLog(), SK=logSkill(), i;
   var s=panel("تسجيل تنبؤ اليوم","لتقييمه لاحقاً بما حدث فعلاً",
     '<div class="actions"><button class="btn solid" id="log-save">◷ سجّل تنبؤ اليوم</button>'
     +'<button class="btn" id="log-reload">⟳ تحديث السجل</button></div>',
@@ -4033,27 +4087,87 @@ function secSkill(){
     +'بعد مرور المدة يقارن التطبيق كل تنبؤ بما حدث ويحسب الخطأ. <b>سجّل مرة واحدة يومياً</b>.');
 
   if(!rows.length) return s+panel("لا سجلات بعد","التقييم يبدأ بعد أول تسجيل",
-    '<p class="note">بعد ثلاثة أيام من أول تسجيل يظهر خطأ التنبؤ عند +٣ أيام، وبعد أسبوعين تكتمل الصورة.</p>')+auditPanel();
+    '<p class="note">بعد ثلاثة أيام من أول تسجيل يظهر خطأ التنبؤ عند +٣ أيام، وبعد أسبوعين تكتمل الصورة، '
+    +'وبعد ثلاثين يوماً يبدأ تقييم الذروة وتوقيتها.</p>')+auditPanel();
 
+  /* ── مصدر الحقيقة: هذا هو الفرق بين قياس الدقة وقياس الثبات ── */
+  var nObs=0, nAll=0;
+  for(i=0;i<SK.length;i++){ nObs+=SK[i].nObs; nAll+=SK[i].n; }
+  s+='<div class="banner '+(nObs?"ok":"warn")+'"><span>'+(nObs?"✓":"⚠")+'</span><div>'
+    +(nObs
+      ? '<b>'+nObs+' مقارنة من '+nAll+' مستندة إلى قياس ميدانى مرصود</b> — هذه وحدها تقيس <b>الدقة</b>. '
+        +'والباقى مقارنة بقيمة المنظومة اللاحقة لنفس اليوم، وهى تقيس <b>ثبات التنبؤ</b> لا صحته.'
+      : '<b>لا توجد بعد أى مقارنة مقابل قياس ميدانى.</b> كل الأرقام أدناه تقارن التنبؤ '
+        +'بقيمة المنظومة نفسها لاحقاً، فهى تقيس <b>ثبات التنبؤ (اتساقه مع نفسه)</b> لا دقته. '
+        +'لحظة إدخال أول قياس لوادى حلفا فى قسم «القياسات الميدانية» يتحوّل هذا السجل من مؤشر ثبات إلى <b>مؤشر دقة حقيقى</b>.')
+    +'</div></div>';
+
+  /* ── مقاييس الدقة لكل أفق ── */
+  var mrows="";
+  for(i=0;i<SK.length;i++){
+    var K=SK[i], m=K.m;
+    mrows+='<tr><td><b>+'+K.h+' أيام</b></td>'
+      +'<td class="num">'+K.n+'</td>'
+      +'<td class="num">'+(K.nObs? K.nObs+' مرصود':'—')+'</td>'
+      +'<td class="num">'+(K.mae!==null?nf(K.mae,1)+'٪':"—")+'</td>'
+      +'<td class="num">'+(K.bias!==null?((K.bias>0?"+":"")+nf(K.bias,1)+'٪'):"—")+'</td>'
+      +'<td class="num">'+(m?nf(m.KGE,3):"—")+'</td>'
+      +'<td class="num">'+(m?nf(m.NSE,3):"—")+'</td>'
+      +'<td class="num">'+(m?nf(m.RMSE,0):"—")+'</td>'
+      +'<td>'+(m&&K.grade? '<span class="pill '+K.grade.cls+'">'+esc(K.grade.g)+'</span>'
+              : '<span class="pill info">عيّنة أقل من ٣</span>')+'</td></tr>';
+  }
+  s+=panel("مقاييس الدقة لكل أفق","نفس مقاييس معمل المعايرة — KGE وNSE وRMSE",
+    '<div class="tb-wrap"><table class="tb"><thead><tr><th>الأفق</th><th>عدد المقارنات</th><th>منها مرصود</th>'
+    +'<th>الخطأ المطلق</th><th>الانحياز</th><th>KGE</th><th>NSE</th><th>RMSE (م³/ث)</th><th>التقدير</th>'
+    +'</tr></thead><tbody>'+mrows+'</tbody></table></div>',
+    '<b>الانحياز</b> موجب = المنظومة تبالغ فى التقدير منهجياً، وسالب = تُقلّل — وهو أهم عمود عملياً لأنه قابل للتصحيح. '
+    +'<b>KGE</b> يجمع الارتباط والتشتت والمتوسط فى رقم واحد (١ = مطابقة تامة). '
+    +'المقاييس لا تُحسب قبل ثلاث مقارنات مكتملة.');
+
+  /* ── الذروة وتوقيتها ── */
+  var prows="", npk=0;
+  rows.slice().reverse().forEach(function(r){
+    if(!r.pk) return;
+    npk++;
+    prows+='<tr><td class="num" style="direction:ltr">'+esc(r.date)+'</td>'
+      +'<td class="num">'+nf(r.pk.vFc,0)+'</td><td class="num" style="direction:ltr">'+esc(r.pk.tFc)+'</td>'
+      +'<td class="num">'+nf(r.pk.vAct,0)+'</td><td class="num" style="direction:ltr">'+esc(r.pk.tAct)+'</td>'
+      +'<td class="num" style="color:'+(Math.abs(r.pk.dQ||0)>15?"#b8503f":"#4d7c5a")+'">'
+        +(r.pk.dQ!==null?((r.pk.dQ>0?"+":"")+nf(r.pk.dQ,1)+'٪'):"—")+'</td>'
+      +'<td class="num" style="color:'+(Math.abs(r.pk.dT)>3?"#c58a2f":"#4d7c5a")+'">'
+        +(r.pk.dT>0?"+":"")+r.pk.dT+' ي</td></tr>';
+  });
+  s+=panel("خطأ الذروة وتوقيتها", npk? "على "+npk+" تنبؤاً اكتملت نافذته" : "لم تكتمل نافذة أى تنبؤ بعد",
+    npk? '<div class="tb-wrap"><table class="tb"><thead><tr><th>تاريخ الإصدار</th><th>الذروة المتنبَّأة</th>'
+      +'<th>تاريخها المتنبَّأ</th><th>الذروة المتحقّقة</th><th>تاريخها</th><th>خطأ المقدار</th><th>خطأ التوقيت</th>'
+      +'</tr></thead><tbody>'+prows+'</tbody></table></div>'
+      : '<p class="note">يبدأ تقييم الذروة بعد ثلاثين يوماً من أول تسجيل، وضمن نافذة السلسلة المتاحة ('+PAST+' يوماً للخلف).</p>',
+    'خطأ التوقيت موجب = المنظومة توقّعت الذروة <b>متأخرة</b> عن موعدها، وسالب = مبكرة. '
+    +'خطأ التوقيت أخطر تشغيلياً من خطأ المقدار لأنه يحدّد موعد الاستعداد.');
+
+  /* ── سجل التنبؤات ── */
   var e3=[],e7=[],e14=[], trows="";
   rows.slice().reverse().forEach(function(r){
     if(r.e3!==null&&r.e3!==undefined) e3.push(Math.abs(r.e3));
     if(r.e7!==null&&r.e7!==undefined) e7.push(Math.abs(r.e7));
     if(r.e14!==null&&r.e14!==undefined) e14.push(Math.abs(r.e14));
     function c(v){ return v===null||v===undefined? '<td class="num">—</td>'
-      : '<td class="num" style="color:'+(Math.abs(v)>15?"#b8503f":(Math.abs(v)>7?"#c58a2f":"#4d7c5a"))+'">'+(v>0?"+":"")+nf(v,1)+'%</td>'; }
+      : '<td class="num" style="color:'+(Math.abs(v)>15?"#b8503f":(Math.abs(v)>7?"#c58a2f":"#4d7c5a"))+'">'+(v>0?"+":"")+nf(v,1)+'٪</td>'; }
+    var src=(r.s3==="obs"||r.s7==="obs"||r.s14==="obs")? stampPill("obs") : stampPill("model");
     trows+='<tr><td class="num" style="direction:ltr">'+esc(r.date)+'</td><td class="num">'+nf(r.q0,0)+'</td>'
-      +c(r.e3)+c(r.e7)+c(r.e14)+'</tr>';
+      +c(r.e3)+c(r.e7)+c(r.e14)+'<td>'+src+'</td></tr>';
   });
   s+='<div class="grid g3" style="margin-top:15px">'
-    +kpi("◷", e3.length&&FIT.mean(e3)>15?"danger":"green","متوسط الخطأ المطلق +٣ أيام", e3.length?nf(FIT.mean(e3),1):"—","%", e3.length+" مقارنة")
-    +kpi("◷","","+٧ أيام", e7.length?nf(FIT.mean(e7),1):"—","%", e7.length+" مقارنة")
-    +kpi("◷","sand","+١٤ يوماً", e14.length?nf(FIT.mean(e14),1):"—","%", e14.length+" مقارنة")
+    +kpi("◷", e3.length&&FIT.mean(e3)>15?"danger":"green","متوسط الخطأ المطلق +٣ أيام", e3.length?nf(FIT.mean(e3),1):"—","٪", e3.length+" مقارنة")
+    +kpi("◷","","+٧ أيام", e7.length?nf(FIT.mean(e7),1):"—","٪", e7.length+" مقارنة")
+    +kpi("◷","sand","+١٤ يوماً", e14.length?nf(FIT.mean(e14),1):"—","٪", e14.length+" مقارنة")
     +'</div>';
   s+=panel("سجل التنبؤات","الخطأ النسبى لكل أفق",
     '<div class="tb-wrap"><table class="tb"><thead><tr><th>تاريخ الإصدار</th><th>التصرف وقتها</th>'
-    +'<th>خطأ +٣</th><th>خطأ +٧</th><th>خطأ +١٤</th></tr></thead><tbody>'+trows+'</tbody></table></div>',
-    'الخطأ موجب = النموذج بالغ فى التقدير، وسالب = قلّل. التقييم يقارن بما تعرضه المنظومة نفسها لاحقاً لنفس اليوم؛ عند إدخال قياسات ميدانية يصير التقييم مقابل المرصود وهو الأصحّ.');
+    +'<th>خطأ +٣</th><th>خطأ +٧</th><th>خطأ +١٤</th><th>مصدر الحقيقة</th></tr></thead><tbody>'+trows+'</tbody></table></div>',
+    'الخطأ موجب = المنظومة بالغت فى التقدير، وسالب = قلّلت. عمود «مصدر الحقيقة» يبيّن ما قُورن به: '
+    +'قياس ميدانى مرصود أم قيمة المنظومة اللاحقة.');
   s+=auditPanel();
   return s;
 }
@@ -4073,6 +4187,8 @@ function secSources(){
     +'<td>ماسكينجم + الاتزان المائى</td><td>نواة موحّدة متحقَّق منها</td></tr>'
     +'<tr><td><b>المسطحات المائية</b></td><td>Sentinel-1 GRD عبر Copernicus Statistical API</td>'
     +'<td>٤ نطاقات · تكرار ١٢ يوماً لكل مدار · ~١٦٠ يوماً للخلف</td><td>باعتماد OAuth من الجهاز أو القاعدة</td></tr>'
+    +'<tr><td><b>تشغيل الخزانات</b></td><td>مركَّب: ألتيمترى DAHITI + منحنى منسوب–حجم تقريبى + وارد GloFAS</td>'
+    +'<td>فترة بين مرورين (~١٠–٢٧ يوماً) · أرشيف وارد ٤٠٠ يوم</td><td>تقدير غير رسمى — ليس قياساً</td></tr>'
     +'<tr><td><b>التخزين والمشاركة</b></td><td>قاعدة الإدارة (Firebase RTDB)</td>'
     +'<td>عتبات · قياسات · إنذارات · سجل أداء</td><td>مسار apps/'+APPID+'</td></tr>';
   s+=panel("مصادر البيانات","كل رقم ومن أين جاء",
@@ -4110,6 +4226,14 @@ function secSources(){
     +'<tr><td><b>نصوص قديمة</b></td><td>صُحّحت ثلاثة نصوص تخلّفت عن الكود: عدد الأعضاء (٥١ ← '+NMEM+')، وإزاحات الاتزان (٢٫٠/١٫٥ ← ٣٫٥/٣٫٥)، ووصف ثقة الخلية بأنها مسافة فقط.</td></tr>'
     +'</tbody></table></div>');
 
+  s+=panel("ما عولج فى الإصدار ٢٫٤","الفجوات الثلاث الكبرى",
+    '<div class="tb-wrap"><table class="tb"><tbody>'
+    +'<tr><td style="width:32%"><b>تشغيل الخزانات</b></td><td>أكبر حدّ معلن فى هذا التطبيق صار <b>رقماً قابلاً للنقاش</b> بدل جملة اعتذار: قسم مستقل يقدّر معدل تغيّر التخزين والإطلاق من فرق المنسوب بين مرورين، بمنحنى معلن وعدم يقين معلن.</td></tr>'
+    +'<tr><td><b>مقاييس الأداء</b></td><td>سجل الأداء كان يعرض خطأ نسبياً فقط؛ صار يحسب KGE وNSE وRMSE والانحياز المنهجى لكل أفق، وخطأ الذروة وتوقيتها — بنفس مقاييس معمل المعايرة.</td></tr>'
+    +'<tr><td><b>مصدر الحقيقة</b></td><td>كان التقييم يقارن التنبؤ بقيمة المنظومة اللاحقة دائماً (وهو قياس ثبات لا دقة). صار يفضّل <b>القياس الميدانى المرصود</b> متى وُجد، ويُعلن فى كل صف ما قُورن به.</td></tr>'
+    +'<tr><td><b>إدخال القياسات</b></td><td>أُضيف إدخال جماعى بلصق عدة أسطر دفعة واحدة، بتحقق من الصيغة وقيد فى سجل التدقيق — لأن العائق أمام تصحيح الانحياز كان الإدخال لا الحساب.</td></tr>'
+    +'</tbody></table></div>');
+
   s+=panel("الأقمار الصناعية — الوضع الصريح","ما هو رصد وما هو نمذجة",
     '<div class="banner info"><span>ℹ</span><div>'
     +'<b>المربوط فعلياً: Sentinel-1 والألتيمترى DAHITI</b> — الرادار فى قسم «مرصد الأقمار»، والمناسيب فى قسم «الألتيمترى» (بمفتاح مجانى) — '
@@ -4121,7 +4245,8 @@ function secSources(){
   s+=panel("ما لا يفعله التطبيق","حدود صريحة",
     '<div class="tb-wrap"><table class="tb"><tbody>'
     +'<tr><td style="width:32%"><span class="pill danger">لا يفعل</span></td>'
-    +'<td>لا يحاكى تشغيل سد النهضة أو أى خزان · لا يمثّل توأم بحيرة ناصر (مؤجَّل بقرارك لعدم توفر المنسوب ومنحنى التخزين الرسمى) · '
+    +'<td>لا يحاكى تشغيل سد النهضة أو أى خزان — و<b>يقدّر</b> صافى تغيّر تخزينه من الألتيمترى بمنحنى منسوب–حجم <b>تقريبى غير رسمى</b>، وهو مؤشر لا محاكاة · '
+    +'لا يمثّل توأم بحيرة ناصر (مؤجَّل بقرارك لعدم توفر المنسوب ومنحنى التخزين الرسمى) · '
     +'لا ينتج خرائط غمر بـDEM · لا يصدر عتبات رسمية · لا يستبدل القياس الميدانى · لا يستنتج تصرفاً ولا تخزيناً من مساحة المسطح المائى · لا يستخدم حدود أحواض رسمية — مضلعات الأحواض <b>مرسومة يدوياً تقريبياً</b>، وللاعتماد التشغيلى تُستبدل بحدود HydroBASINS أو حدود معتمدة من الوزارة.</td></tr>'
     +'</tbody></table></div>');
 
@@ -4547,6 +4672,212 @@ function certShare(){
     netErr("المشاركة غير مدعومة على هذا المتصفح — استخدم زر التنزيل", new Error("Web Share files غير متاح"));
   }
 }
+/* =====================================================================
+   ١٥. تشغيل الخزانات — صافى تغيّر التخزين والإطلاق المُقدَّر
+   المبدأ: GloFAS لا يرى السد، فتصرف الديم المُنمذَج ≈ الوارد الطبيعى للخزان.
+   والألتيمترى يرى المنسوب ومنه التخزين. فالفرق بينهما = قرار التشغيل نفسه.
+   الاتزان يمرّ عبر MWRIHyd.waterBalance حصراً — لا معادلة اتزان جديدة هنا.
+   ===================================================================== */
+var DAM_V_UNC = 0.12;   /* عدم يقين منحنى المنسوب–الحجم التقريبى */
+var RESERVOIRS = [
+  { id:"gerd", altiId:"gerd", nm:"سد النهضة", inflow:"eldiem", nmInflow:"الديم",
+    hv:[{h:505,v:0},{h:560,v:4.9},{h:575,v:13.5},{h:600,v:22.0},{h:625,v:42.0},{h:640,v:74.0}],
+    hvSrc:"معالم الملء المعلنة ٢٠٢٠–٢٠٢٤ مع منسوب الاعتماد ٦٤٠ م = ٧٤ مليار م³" }
+];
+function resv(id){ var i; for(i=0;i<RESERVOIRS.length;i++) if(RESERVOIRS[i].id===id) return RESERVOIRS[i]; return RESERVOIRS[0]; }
+function hvV(R,h){
+  var P=R.hv, i;
+  if(h<=P[0].h) return {v:P[0].v, out:true};
+  if(h>=P[P.length-1].h) return {v:P[P.length-1].v, out:true};
+  for(i=0;i<P.length-1;i++) if(h>=P[i].h&&h<=P[i+1].h){
+    var f=(h-P[i].h)/(P[i+1].h-P[i].h);
+    return {v:P[i].v+f*(P[i+1].v-P[i].v), out:false};
+  }
+  return {v:null, out:true};
+}
+function hvArea(R,h){   /* كم² = ميل المنحنى (مليار م³ لكل متر) × ١٠٠٠ */
+  var P=R.hv, i;
+  for(i=0;i<P.length-1;i++) if(h>=P[i].h&&h<=P[i+1].h)
+    return (P[i+1].v-P[i].v)/(P[i+1].h-P[i].h)*1000;
+  return null;
+}
+function damNatural(){
+  if(ST.dam.nat) return ST.dam.nat;
+  if(ST.q&&ST.q.eldiem) return {t:ST.q.eldiem.t, q:ST.q.eldiem.q, src:"النافذة الحية ("+PAST+" يوماً)"};
+  return null;
+}
+function damNatMean(N,t1,t2){
+  var n1=altiDayNum(t1), n2=altiDayNum(t2), days=n2-n1, i, sum=0, c=0;
+  if(days<=0) return null;
+  for(i=0;i<N.t.length;i++){
+    var dd=altiDayNum(N.t[i]);
+    if(dd>n1&&dd<=n2&&N.q[i]!==null&&!isNaN(N.q[i])){ sum+=N.q[i]; c++; }
+  }
+  if(c < Math.max(2, Math.round(days*0.6))) return null;   /* تغطية ناقصة = لا رقم */
+  return sum/c;
+}
+function damIntervals(id){
+  var R=resv(id), D=ST.alti.data[R.altiId];
+  if(!D||!D.series||D.series.length<2) return [];
+  var S=D.series.slice().sort(function(a,b){ return altiDayNum(a.t)-altiDayNum(b.t); });
+  var N=damNatural(), out=[], i, mm=ST.dam.evap;
+  for(i=1;i<S.length;i++){
+    var days=altiDayNum(S[i].t)-altiDayNum(S[i-1].t);
+    if(days<4||days>75) continue;
+    var v1=hvV(R,S[i-1].v), v2=hvV(R,S[i].v);
+    if(v1.v===null||v2.v===null) continue;
+    var dV=v2.v-v1.v;
+    var dS=dV*1e9/(days*86400);
+    var A=hvArea(R,(S[i-1].v+S[i].v)/2);
+    var evap=(A!==null)? A*1e6*(mm/1000)/86400 : 0;
+    var nat=N? damNatMean(N,S[i-1].t,S[i].t) : null;
+    var rel=(nat!==null)? nat-dS-evap : null;
+    var wb=null;
+    if(nat!==null && window.MWRIHyd)
+      wb=MWRIHyd.waterBalance([{Q:nat}],[{Q:rel}],{evaporation:evap, tolerancePct:5});
+    out.push({ t1:S[i-1].t, t2:S[i].t, days:days, h1:S[i-1].v, h2:S[i].v,
+      dH:S[i].v-S[i-1].v, dV:dV, dS:dS, area:A, evap:evap, nat:nat, rel:rel,
+      wb:wb, clamp:(v1.out||v2.out) });
+  }
+  return out;
+}
+function damState(dS){
+  if(dS===null||dS===undefined) return {nm:"—", cls:"info"};
+  if(dS>300)  return {nm:"احتجاز", cls:"sand"};
+  if(dS<-300) return {nm:"تمرير يفوق الوارد", cls:"lake"};
+  return {nm:"شبه متوازن", cls:"green"};
+}
+function damLoadNatural(){
+  var R=resv(ST.dam.sel), st=stn(R.inflow);
+  if(!st) return Promise.resolve(null);
+  var to=new Date(Date.now()-864e5), fr=new Date(Date.now()-400*864e5);
+  var url=FLOOD_API+"?latitude="+st.lat+"&longitude="+st.lon
+    +"&daily=river_discharge&start_date="+fr.toISOString().slice(0,10)
+    +"&end_date="+to.toISOString().slice(0,10);
+  ST.dam.natLoading=true; render();
+  return getJSON(url,"تعذّر جلب أرشيف الوارد الطبيعى").then(function(a){
+    var d=(a&&a.length!==undefined)?a[0]:a;
+    if(d&&d.daily) ST.dam.nat={t:d.daily.time, q:d.daily.river_discharge, src:"أرشيف ٤٠٠ يوم"};
+    ST.dam.natLoading=false; render(); return ST.dam.nat;
+  }).catch(function(){ ST.dam.natLoading=false; render(); return null; });
+}
+
+function secDam(){
+  var R=resv(ST.dam.sel), D=ST.alti.data[R.altiId], IV=damIntervals(ST.dam.sel), N=damNatural();
+  var sel='<div class="ctrl"><label>الخزان:</label><select id="dam-sel">', i;
+  for(i=0;i<RESERVOIRS.length;i++)
+    sel+='<option value="'+RESERVOIRS[i].id+'"'+(ST.dam.sel===RESERVOIRS[i].id?" selected":"")+'>'+esc(RESERVOIRS[i].nm)+'</option>';
+  sel+='</select>'
+    +'<button class="btn solid" id="dam-alti"'+(ST.alti.loading?" disabled":"")+'>'+(ST.alti.loading?"⏳ جارٍ…":"≋ اجلب المناسيب")+'</button>'
+    +'<button class="btn" id="dam-nat"'+(ST.dam.natLoading?" disabled":"")+'>'+(ST.dam.natLoading?"⏳ جارٍ…":"⤓ أرشيف الوارد الطبيعى (٤٠٠ يوم)")+'</button>'
+    +'<label>بخر (مم/يوم)</label><input type="number" step="0.5" id="dam-evap" value="'+ST.dam.evap+'" style="width:80px">'
+    +'</div>';
+
+  var s='<div class="banner warn"><span>⚠</span><div>'
+    +'<b>تقدير غير رسمى.</b> الرقم هنا مركَّب من ثلاثة مصادر لكل منها عدم يقينه: '
+    +'الوارد الطبيعى <b>مخرج نموذج</b> GloFAS لا قياس، ومنحنى المنسوب–الحجم <b>تقريبى</b> مبنى على معالم الملء المعلنة لا على منحنى رسمى، '
+    +'والبخر <b>مفترض</b> بمعدل قابل للتعديل. ونظراً لتباعد مرور الأقمار فالمعدّل <b>متوسط على الفترة بين مرورين</b> لا رقم يومى. '
+    +'لا يُبنى على هذا الرقم قرار تشغيلى؛ قيمته أنه <b>أول مؤشر كمى</b> على ما لا يراه النموذج أصلاً.</div></div>';
+  s=panel("تشغيل الخزانات","ما لا يراه GloFAS — مقيساً لا مفترضاً", sel+s,
+    'المعادلة: <b>الإطلاق المُقدَّر = الوارد الطبيعى − معدل تغيّر التخزين − البخر</b>. '
+    +'تغيّر التخزين يأتى من فرق المنسوب بين مرورين مضروباً فى منحنى المنسوب–الحجم، والاتزان يُغلق عبر نواة MWRIHyd.');
+
+  if(!D||!D.series||!D.series.length)
+    return s+panel("المناسيب غير محمَّلة","اجلب سلسلة الألتيمترى أولاً",
+      '<p class="note">اضغط «اجلب المناسيب» أعلاه — يحتاج مفتاح DAHITI المحفوظ (قسم الألتيمترى).</p>');
+  if(!IV.length)
+    return s+panel("لا فترات صالحة","الفواصل بين المرورات خارج المدى ٤–٧٥ يوماً",
+      '<p class="note">السلسلة محمَّلة ('+D.series.length+' رصدة) لكن لا فترتين متتاليتين ضمن المدى الصالح للحساب.</p>');
+
+  var L=IV[IV.length-1], stt=damState(L.dS), unc=Math.abs(L.dS)*DAM_V_UNC;
+  s+='<div class="grid g3">'
+    +kpi("≋","", "آخر منسوب مرصود", nf(L.h2,2), "م", "بتاريخ "+L.t2)
+    +kpi("Δ", L.dH>0?"sand":"lake", "تغيّر المنسوب فى الفترة", (L.dH>0?"+":"")+nf(L.dH,2), "م", L.days+" يوماً منذ "+L.t1)
+    +kpi("▣","", "تغيّر التخزين", (L.dV>0?"+":"")+nf(L.dV,2), "مليار م³", "بمنحنى تقريبى ±"+Math.round(DAM_V_UNC*100)+"٪")
+    +kpi("⇄", stt.cls, "معدل تغيّر التخزين", (L.dS>0?"+":"")+nf(L.dS,0), "م³/ث", "±"+nf(unc,0)+" · "+stt.nm)
+    +kpi("⌁","", "الوارد الطبيعى المُنمذَج", L.nat!==null?nf(L.nat,0):"—", "م³/ث", L.nat!==null?("متوسط الفترة · "+(N?N.src:"—")):"خارج نافذة البيانات")
+    +kpi("➟", L.rel!==null?"green":"", "الإطلاق المُقدَّر", L.rel!==null?nf(L.rel,0):"—", "م³/ث", L.rel!==null?("بخر مخصوم "+nf(L.evap,0)+" م³/ث"):"يلزم أرشيف الوارد")
+    +'</div>';
+
+  if(L.rel!==null){
+    var pct=L.nat? L.dS/L.nat*100 : null;
+    s+='<div class="banner '+(Math.abs(pct||0)>15?"warn":"info")+'"><span>◆</span><div>'
+      +'خلال الفترة '+esc(L.t1)+' ← '+esc(L.t2)+' ('+L.days+' يوماً): الخزان '
+      +'<b>'+esc(stt.nm)+'</b> بمعدل '+nf(Math.abs(L.dS),0)+' م³/ث، أى '
+      +(pct!==null? '<b>'+nf(Math.abs(pct),1)+'٪</b> من الوارد الطبيعى' : 'نسبة غير محسوبة')+'. '
+      +'وعليه فالتصرف الفعلى المارّ للسودان أقرب إلى <b>'+nf(L.rel,0)+' م³/ث</b> منه إلى '
+      +nf(L.nat,0)+' م³/ث التى يعرضها النموذج. '
+      +(L.wb? 'انغلاق الاتزان عبر النواة: '+nf(L.wb.closure,0)+' م³/ث (يطابق معدل التخزين بالتعريف).' : '')
+      +'</div></div>';
+  }
+
+  /* منحنى الوارد الطبيعى مقابل الإطلاق المُقدَّر */
+  if(N){
+    var a1=altiDayNum(IV[0].t1), a2=altiDayNum(IV[IV.length-1].t2);
+    var T=[], vn=[], vr=[], j, kk;
+    for(j=0;j<N.t.length;j++){
+      var dd=altiDayNum(N.t[j]);
+      if(dd<a1||dd>a2) continue;
+      T.push(N.t[j]); vn.push(N.q[j]);
+      var rv=null;
+      for(kk=0;kk<IV.length;kk++)
+        if(dd>altiDayNum(IV[kk].t1)&&dd<=altiDayNum(IV[kk].t2)&&IV[kk].rel!==null) rv=IV[kk].rel;
+      vr.push(rv);
+    }
+    if(T.length>3)
+      s+=panel("الوارد الطبيعى مقابل الإطلاق المُقدَّر","الفجوة بينهما هى أثر التشغيل",
+        '<div class="chart-box">'+plot({t:T, yTitle:"م³/ث", zero:true, series:[
+          {v:vn, color:"#155b75", wd:2.2},
+          {v:vr, color:"#c58a2f", wd:2.2, dash:"5 4"}
+        ]})+'</div>'
+        +'<div class="legend"><span><i style="background:#155b75"></i>وارد طبيعى مُنمذَج (GloFAS)</span>'
+        +'<span><i style="background:#c58a2f"></i>إطلاق مُقدَّر (ثابت داخل كل فترة)</span></div>',
+        'خط الإطلاق <b>مُدرَّج</b> لا يومى: قيمته ثابتة داخل كل فترة بين مرورين لأن الألتيمترى لا يعطى أكثر من ذلك.');
+  }
+
+  /* جدول الفترات */
+  var rows="";
+  IV.slice().reverse().forEach(function(v){
+    var st2=damState(v.dS);
+    rows+='<tr><td class="num" style="direction:ltr">'+esc(v.t1)+' ← '+esc(v.t2)+'</td>'
+      +'<td class="num">'+v.days+'</td>'
+      +'<td class="num">'+(v.dH>0?"+":"")+nf(v.dH,2)+'</td>'
+      +'<td class="num">'+(v.dV>0?"+":"")+nf(v.dV,2)+'</td>'
+      +'<td class="num">'+(v.dS>0?"+":"")+nf(v.dS,0)+'</td>'
+      +'<td class="num">'+(v.nat!==null?nf(v.nat,0):"—")+'</td>'
+      +'<td class="num">'+(v.rel!==null?nf(v.rel,0):"—")+'</td>'
+      +'<td><span class="pill '+st2.cls+'">'+esc(st2.nm)+'</span>'
+      +(v.clamp?'<div style="font-size:9px;color:var(--muted)">منسوب خارج مدى المنحنى</div>':'')+'</td></tr>';
+  });
+  s+=panel("سجل الفترات بين المرورات","كل فترة برقمها ومصدرها",
+    '<div class="tb-wrap"><table class="tb"><thead><tr><th>الفترة</th><th>أيام</th><th>Δمنسوب (م)</th>'
+    +'<th>Δتخزين (مليار م³)</th><th>معدل (م³/ث)</th><th>وارد طبيعى</th><th>إطلاق مُقدَّر</th><th>الحالة</th>'
+    +'</tr></thead><tbody>'+rows+'</tbody></table></div>',
+    'الأعمدة الأربعة الأولى <b>من الرصد</b> (منسوب مقيس + منحنى تقريبى)، والعمودان التاليان <b>من النمذجة</b>. '
+    +'خانة «—» تعنى أن أرشيف الوارد لا يغطى الفترة تغطية كافية (٦٠٪ من أيامها فأكثر) — اجلب الأرشيف أعلاه.');
+
+  /* المنحنى المستخدم */
+  var hr="";
+  for(i=0;i<R.hv.length;i++)
+    hr+='<tr><td class="num">'+R.hv[i].h+'</td><td class="num">'+nf(R.hv[i].v,1)+'</td>'
+      +'<td class="num">'+(i<R.hv.length-1? nf((R.hv[i+1].v-R.hv[i].v)/(R.hv[i+1].h-R.hv[i].h)*1000,0):"—")+'</td></tr>';
+  s+=panel("منحنى المنسوب–الحجم المستخدم","معلن لا مخفى",
+    '<div class="tb-wrap"><table class="tb"><thead><tr><th>المنسوب (م)</th><th>التخزين التراكمى (مليار م³)</th>'
+    +'<th>المساحة الضمنية (كم²)</th></tr></thead><tbody>'+hr+'</tbody></table></div>',
+    'المصدر: '+esc(R.hvSrc)+'. الاستيفاء خطى بين المعالم، والمساحة مشتقة من ميل المنحنى لا من قياس مساحى — فهى <b>درجية</b> تقفز عند كل معلم، وأثرها محصور فى حدّ البخر وحده لا فى تغيّر التخزين نفسه (وهو الرقم الحاكم). '
+    +'<b>هذا ليس منحنى الخزان الرسمى</b> — وباستبداله بمنحنى معتمد تصير الأرقام أعلاه اعتمادية. '
+    +'<b>انحياز معروف الاتجاه:</b> المساحة الضمنية فى شريحة ٦٠٠–٦٢٥ م تخرج نحو ٨٠٠ كم² بينما المساحة المعلنة عند منسوب الاعتماد ٦٤٠ م نحو ١٨٧٤ كم². '
+    +'ومعنى ذلك أن تغيّر التخزين المحسوب داخل هذه الشريحة <b>أقل على الأرجح من حقيقته</b> — انحياز فى اتجاه معلوم لا خطأ عشوائى، '
+    +'فيُقرأ الرقم كحدّ أدنى للاحتجاز أو التمرير لا كقيمة نهائية. '
+    +'بحيرة ناصر مستثناة عمداً: مرجعها الرسمى مقياس السد العالى ومنحنى تخزينه المعتمد، لا استنتاج من الألتيمترى.');
+
+  s+=panel("كيف تختبر الأثر","الربط بصندوق السيناريوهات",
+    '<p class="note">لمعرفة أثر هذا الفرق عند وادى حلفا، اذهب إلى قسم «ماذا لو» واحقن اضطراباً عند الديم بمقدار '
+    +(L.dS!==null? nf(-L.dS,0):"—")+' م³/ث — هو الفرق بين الوارد الطبيعى والإطلاق المُقدَّر — '
+    +'فيتتبّعه التطبيق بماسكينجم حتى حلفا بالتوهين وزمن العبور الصحيحين.</p>');
+  return s;
+}
+
 /* ═════ النشرة التنفيذية اليومية — قوالب حتمية لا توليد حر ═════ */
 function bulletinText(){
   var L=[], q=cur("halfa"), lvl=(q!==null&&ST.thr)?alertLevel(q):null;
@@ -4575,6 +4906,13 @@ function bulletinText(){
     var tr=(as2&&as2.d30!==null&&as2.d30!==undefined)? (as2.d30>0.15?" (اتجاه صاعد ~"+nf(as2.d30,1)+" م/٣٠ يوماً)":(as2.d30<-0.15?" (اتجاه هابط ~"+nf(as2.d30,1)+" م/٣٠ يوماً)":" (شبه مستقر)")) : "";
     L.push("ألتيمترى DAHITI: منسوب بحيرة سد النهضة "+nf(last.v,2)+" م بتاريخ "+last.t+tr+".");
   } else L.push("طبقة الألتيمترى غير محمَّلة فى هذه الجلسة.");
+  var IVb=null; try{ IVb=damIntervals("gerd"); }catch(e){}
+  if(IVb&&IVb.length){
+    var Lb=IVb[IVb.length-1], sb=damState(Lb.dS);
+    L.push("تشغيل سد النهضة (تقدير غير رسمى من الألتيمترى): "+sb.nm+" بمعدل "+nf(Math.abs(Lb.dS),0)
+      +" م³/ث خلال "+Lb.days+" يوماً حتى "+Lb.t2
+      +(Lb.rel!==null? "، فالإطلاق المُقدَّر نحو "+nf(Lb.rel,0)+" م³/ث مقابل وارد طبيعى مُنمذَج "+nf(Lb.nat,0)+" م³/ث." : "."));
+  } else L.push("طبقة تشغيل الخزانات غير محمَّلة فى هذه الجلسة.");
   L.push("");
   L.push("رابعاً — التوصية:");
   var k=lvl?lvl.k:0;
@@ -4640,6 +4978,7 @@ function render(){
   else if(ST.sec==="skill")    h=secSkill();
   else if(ST.sec==="sources")  h=secSources();
   else if(ST.sec==="alti")     h=secAlti();
+  else if(ST.sec==="dam")      h=secDam();
   else if(ST.sec==="cert")     h=secCert();
   else if(ST.sec==="install")  h=secInstall();
   c.innerHTML=h;
@@ -4870,6 +5209,14 @@ function bindControls(){
     altiLoad(ST.alti.sel);
   };
 
+  el=$("dam-sel"); if(el) el.onchange=function(){ ST.dam.sel=this.value; render(); };
+  el=$("dam-alti"); if(el) el.onclick=function(){ altiLoad(resv(ST.dam.sel).altiId); };
+  el=$("dam-nat"); if(el) el.onclick=function(){ damLoadNatural(); };
+  el=$("dam-evap"); if(el) el.onchange=function(){
+    var v=parseFloat(this.value);
+    ST.dam.evap=(isNaN(v)||v<0||v>20)?5:v; render();
+  };
+
   el=$("cert-make"); if(el) el.onclick=function(){ certMake(); };
   el=$("cert-share"); if(el) el.onclick=function(){ certShare(); };
 
@@ -4893,6 +5240,37 @@ function bindControls(){
       .catch(function(e){ netErr("تعذّر حفظ القياس (حُفظ محلياً وسيُرفع تلقائياً)", e); render(); });
   };
   el=$("ob-st"); if(el) el.onchange=function(){ ST.obsStation=this.value; };
+
+  el=$("obb-save"); if(el) el.onclick=function(){
+    var sid=$("obb-st")?$("obb-st").value:"halfa";
+    var txt=$("obb-txt")? String($("obb-txt").value||"") : "";
+    var lines=txt.split(/\r?\n/), acc={}, ok=0, bad=0, why=[], i;
+    for(i=0;i<lines.length;i++){
+      var ln=lines[i].replace(/^\s+|\s+$/g,"");
+      if(!ln) continue;
+      var p=ln.split(/[,;\t ]+/);
+      if(p.length<2){ bad++; if(why.length<3) why.push("سطر "+(i+1)); continue; }
+      var dt=p[0], q=parseFloat(p[1]);
+      if(/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(dt)){
+        var z=dt.split("/");
+        dt=z[2]+"-"+("0"+z[1]).slice(-2)+"-"+("0"+z[0]).slice(-2);
+      }
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(dt) || isNaN(q) || q<0 || q>200000){
+        bad++; if(why.length<3) why.push("سطر "+(i+1)); continue;
+      }
+      acc[dt]={q:q, at:Date.now(), by:ST.user||"غير محدد"};
+      ok++;
+    }
+    ST.obsBulk={ok:ok, bad:bad, why:why.join(" · ")};
+    if(!ok){ render(); return; }
+    ST.obs[sid]=ST.obs[sid]||{};
+    var kk; for(kk in acc) if(Object.prototype.hasOwnProperty.call(acc,kk)) ST.obs[sid][kk]=acc[kk];
+    ST.obsStation=sid;
+    auditLog("إدخال جماعى للقياسات", (stn(sid)?stn(sid).nm:sid)+" · "+ok+" قياساً");
+    MwriDb.patch("apps/"+APPID+"/data/obs/"+sid, acc)
+      .then(function(){ render(); })
+      .catch(function(e){ netErr("تعذّر رفع الدفعة (حُفظت محلياً وستُرفع تلقائياً)", e); render(); });
+  };
 
   el=$("al-new"); if(el) el.onclick=function(){
     var q=cur("halfa"), lvl=alertLevel(q), ens=runEnsemble();
