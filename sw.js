@@ -1,10 +1,10 @@
 /* مِرقاب الفيضان — Service Worker */
-var VERSION = "nile-flood-forecast-v2.45";
+var VERSION = "nile-flood-forecast-v2.50";
 var SHELL = ["./", "./index.html", "./manifest.json",
              "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png"];
 /* استثناء إلزامى: نطاقات البيانات الحية لا تدخل الكاش إطلاقاً (no-store)
    — عرض قراءة مخزّنة قديمة على أنها تصرف اليوم خطأ تشغيلى جسيم. */
-var NETWORK_ONLY = ["open-meteo.com", "flood-api", "api.open-meteo", "firebasedatabase.app", "dataspace.copernicus.eu", "dahiti.dgfi.tum.de", "floodforecasting.googleapis.com", "googleapis.com", "gstatic.com"];
+var NETWORK_ONLY = ["open-meteo.com", "flood-api", "api.open-meteo", "firebasedatabase.app", "dataspace.copernicus.eu", "dahiti.dgfi.tum.de", "floodforecasting.googleapis.com", "googleapis.com", "workers.dev", "gstatic.com"];
 function isNetworkOnly(u){
   for (var i = 0; i < NETWORK_ONLY.length; i++) { if (u.indexOf(NETWORK_ONLY[i]) > -1) return true; }
   return false;

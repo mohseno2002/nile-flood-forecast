@@ -231,7 +231,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.45</small>
+      <small id="buildtag">build 2.50</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -726,7 +726,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.45";
+var BUILD = "2.50";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -785,6 +785,7 @@ var SECTIONS = [
   {id:"sources",  icon:"❐", eyebrow:"الشفافية",             title:"المصادر والمنهجية والحدود"},
   {id:"alti",     icon:"≋", eyebrow:"الألتيمترى",           title:"المناسيب المرصودة — بحيرات ومجرى"},
   {id:"dam",      icon:"⛬", eyebrow:"تشغيل الخزانات",       title:"صافى الإطلاق من الألتيمترى"},
+  {id:"wapor",    icon:"◉", eyebrow:"استشعار الفواقد",       title:"WaPOR — البخر والفواقد المقيسة"},
   {id:"gfh",      icon:"⊞", eyebrow:"الرأى الثانى",         title:"تنبؤ جوجل — نموذج مستقل"},
   {id:"cert",     icon:"✦", eyebrow:"النشرة",               title:"شهادة الرصد المستقل"},
   {id:"install",  icon:"⤓", eyebrow:"التثبيت",              title:"تثبيت التطبيق وتشخيصه"}
@@ -807,9 +808,14 @@ var ST = {
   user:"", audit:{}, reachesPrev:null,
   sar:{ data:{}, loading:null, credSrc:null, sel:"shendi" },
   alti:{ data:{}, loading:false, sel:"gerd", keyOk:null, mode:"lake" },
-  dam:{ sel:"gerd", nat:null, natLoading:false, evap:5 },
+  dam:{ sel:"gerd", nat:null, natLoading:false, evap:5, evapSrc:"افتراضى" },
   cal:{ on:false, ref:null, model:null, loading:false, refSrc:"افتراضى" },
   rlv:{ sel:"khartoum", data:{}, arch:{}, loading:"", err:"" },
+  nudge:true,
+  calM:{ running:false, done:0, res:{}, fail:[] },
+  rr:{ busy:false, fit:null, err:"" },
+  wp:{ kind:"evap", mapset:"L2-AETI-D", nDek:6, busy:false, prog:"", err:"",
+       rasters:null, got:{}, fails:0, areaOv:{} },
   gfh:{ key:null, keySrc:"", keyOk:null, busy:"", gauges:null, models:{}, fc:{},
         status:{}, pick:{}, sel:"halfa", err:"", stamp:null },
   obsBulk:null,
@@ -2478,6 +2484,38 @@ function routeSystem(qEldiem, qJaulia, qAtbara, R){
            r1:r1, r2:r2, r3:r3, r4:r4, S:Stot };
 }
 
+/* =====================================================================
+   تصحيح الحالة عند حلفا — الحلقة التى تفصل نظام تنبؤ تشغيلياً عن نموذج مفتوح
+   التتبّع يبدأ من الديم فيتراكم انحرافه حتى حلفا. الممارسة التشغيلية المعتادة
+   أن يُصحَّح الفارق عند آخر قيمة معروفة، بوزن يتلاشى مع الأفق لأن التصحيح
+   لا معنى له بعيداً حيث تحكم الأمطار لا الحالة الابتدائية.
+   المرساة: القياس الميدانى المصحَّح إن توفّر، وإلا قيمة GloFAS عند حلفا.
+   ===================================================================== */
+var NUDGE_L = 10;
+function nudgeAnchor(){
+  if(!ST.q||!ST.q.halfa) return null;
+  var k=nowIdx(), v=ST.q.halfa.q[k];
+  if(v===null||v===undefined||isNaN(v)) return null;
+  var bm=null; try{ bm=biasModel("halfa"); }catch(e){}
+  if(bm&&bm.valid){
+    var c=correctedQ("halfa", v);
+    if(c!==null&&!isNaN(c)) return { v:c, src:"corr" };
+  }
+  return { v:v, src:"model" };
+}
+function nudgeApply(arr){
+  if(!ST.nudge||!arr) return arr;
+  var A=nudgeAnchor(); if(!A) return arr;
+  var k=nowIdx();
+  if(k>=arr.length||arr[k]===null||arr[k]===undefined||isNaN(arr[k])) return arr;
+  var off=A.v-arr[k], out=arr.slice(), i;
+  for(i=k;i<out.length;i++){
+    if(out[i]===null||out[i]===undefined||isNaN(out[i])) continue;
+    var w=1-(i-k)/NUDGE_L; if(w<0) w=0;
+    out[i]=out[i]+off*w;
+  }
+  return out;
+}
 function runRouting(){
   if(!ST.q||!ST.q.eldiem) return null;
   var t=ST.q.eldiem.t, f=scenF(), R=ST.reaches;
@@ -2485,6 +2523,17 @@ function runRouting(){
   var white  = ST.q.jaulia? ST.q.jaulia.q : inflow.map(function(){return 0;});
   var atb    = ST.q.atbara? mulS(ST.q.atbara.q, f) : inflow.map(function(){return 0;});
   var sys = routeSystem(inflow, white, atb, R);
+
+  /* تصحيح الحالة: يُطبَّق على المخرج عند حلفا فقط — لا على المقاطع الوسيطة
+     حتى يبقى الاتزان الحجمى وحفظ الكتلة محسوبين على الأرقام الخام */
+  var ndg=null;
+  if(ST.nudge){
+    var A0=nudgeAnchor(), k0=nowIdx();
+    if(A0 && sys.halfa[k0]!==null && sys.halfa[k0]!==undefined && !isNaN(sys.halfa[k0])){
+      ndg={ off:A0.v-sys.halfa[k0], anchor:A0.v, raw:sys.halfa[k0], src:A0.src, L:NUDGE_L };
+      sys.halfa=nudgeApply(sys.halfa);
+    }
+  }
 
   /* التراكب الكمى — ماسكينجم خطى فالتفكيك مطابق تماماً */
   var zero = inflow.map(function(){ return 0; });
@@ -2521,6 +2570,7 @@ function runRouting(){
     alignedIn:alignedIn, lag:L1, lagWhite:L2, lagAtbara:L3,
     dS:dS, volInRaw:volIn2, volResid:volResid,
     pkIn:pkIn, pkOut:pkOut, att:att, rising:rising, volIn:volIn, volOut:volOut,
+    ndg:ndg,
     obsHalfa: ST.q.halfa? ST.q.halfa.q : null };
 }
 
@@ -2538,7 +2588,7 @@ function runEnsemble(){
     var e = mulS(Me[m], f);
     var w = (Mw&&Mw[m])? Mw[m] : (ST.q.jaulia?ST.q.jaulia.q:zero);
     var a = (Ma&&Ma[m])? mulS(Ma[m], f) : (ST.q.atbara?mulS(ST.q.atbara.q,f):zero);
-    var h = routeSystem(e, w, a, R).halfa;
+    var h = nudgeApply(routeSystem(e, w, a, R).halfa);
     routed.push(h);
     var p = peakOf(h, t);
     peaks.push(p.v); pkDates.push(p.i);
@@ -3351,7 +3401,9 @@ function secRouting(){
     cal,
     '<b>المرجع المستخدم للمعايرة هو GloFAS نفسه</b> عند المحطة المصبّية لكل مقطع، فهذه معايرة اتساق داخلى للنموذج لا مطابقة للواقع الميدانى. للمعايرة الحقيقية أدخل قياساتك من قسم «القياس والثقة». لا تُغيَّر المعاملات إلا بضغطك على زر الاعتماد.');
 
+  s+=nudgePanel();
   s+=histCalPanel();
+  s+=calMPanel();
 
   s+=panel("تدرّج الموجة على المجرى","الهيدروجراف عند كل عقدة",
     '<div class="chart-box">'+plot({
@@ -3562,6 +3614,234 @@ function rwDetail(){
     +(lag?'<div style="margin-top:8px"><small>زمن وصول أثر مطر هذه الخلية إلى وادى حلفا تقديرياً ~<b>'+nf(lag.toHalfa,0)+' يوماً</b></small></div>':"")
     +'</div>';
 }
+/* =====================================================================
+   نموذج المطر ← تصرف (إحصائى) — يمدّ الأفق ويعطى إنذاراً مبكراً كمياً
+   الفكرة: مؤشر المطر المتراكم بنضوب (API) على حوض النيل الأزرق يسبق تصرف
+   الديم بأيام. نُعاير انحداراً خطياً Q(t+L) = a·Q(t) + b·API(t) + c
+   على أرشيف حقيقى، ونختبره على **سنوات محجوبة لم تدخل المعايرة**،
+   ونقارنه بمرجعين: الاستمرار (Q اليوم كما هو) والمناخيات (متوسط اليوم التقويمى).
+   ولا يُعرض تنبؤ لأفق لم يتفوّق على المرجعين — لا رقم بلا مهارة مُثبَتة.
+   ===================================================================== */
+var ARCHIVE_API = "https://archive-api.open-meteo.com/v1/archive";
+var RR_FROM = "2016-01-01", RR_DECAY = 0.90, RR_HOR = [7,14,21,30,45], RR_TEST_YEARS = 2;
+
+function rrApiIndex(daily){
+  var a=[], sacc=0, i;
+  for(i=0;i<daily.length;i++){
+    var v=(daily[i]===null||daily[i]===undefined||isNaN(daily[i]))?0:daily[i];
+    sacc=sacc*RR_DECAY+v; a.push(sacc);
+  }
+  return a;
+}
+/* حلّ نظام ٣×٣ بالحذف الجاوسى — انحدار بمتغيّرين وثابت */
+function rrSolve3(A, b){
+  var i,j,k,n=3, M=[];
+  for(i=0;i<n;i++){ M.push(A[i].slice()); M[i].push(b[i]); }
+  for(i=0;i<n;i++){
+    var p=i;
+    for(j=i+1;j<n;j++) if(Math.abs(M[j][i])>Math.abs(M[p][i])) p=j;
+    if(Math.abs(M[p][i])<1e-12) return null;
+    var tmp=M[i]; M[i]=M[p]; M[p]=tmp;
+    for(j=i+1;j<n;j++){
+      var f=M[j][i]/M[i][i];
+      for(k=i;k<=n;k++) M[j][k]-=f*M[i][k];
+    }
+  }
+  var x=[0,0,0];
+  for(i=n-1;i>=0;i--){
+    var sm=M[i][n];
+    for(j=i+1;j<n;j++) sm-=M[i][j]*x[j];
+    x[i]=sm/M[i][i];
+  }
+  return x;
+}
+function rrRegress(rows){
+  /* rows: [{q,a,y}] → معاملات [a,b,c] */
+  var S=[[0,0,0],[0,0,0],[0,0,0]], B=[0,0,0], i;
+  for(i=0;i<rows.length;i++){
+    var v=[rows[i].q, rows[i].a, 1], j, k;
+    for(j=0;j<3;j++){
+      for(k=0;k<3;k++) S[j][k]+=v[j]*v[k];
+      B[j]+=v[j]*rows[i].y;
+    }
+  }
+  return rrSolve3(S,B);
+}
+function rrRmse(pred, obs){
+  var s=0,n=0,i;
+  for(i=0;i<obs.length;i++){ var d=pred[i]-obs[i]; s+=d*d; n++; }
+  return n? Math.sqrt(s/n) : null;
+}
+function rrFit(){
+  var cells=basinCells("blue");
+  if(!cells.length){ netErr("لا خلايا مطر", new Error("حوض الأزرق فارغ")); return Promise.resolve(null); }
+  var lats=[], lons=[], i;
+  for(i=0;i<cells.length;i++){ lats.push(cells[i].lat); lons.push(cells[i].lon); }
+  var to=new Date(Date.now()-3*864e5).toISOString().slice(0,10);
+  ST.rr.busy=true; ST.rr.err=""; render();
+  var uR=ARCHIVE_API+"?latitude="+lats.join(",")+"&longitude="+lons.join(",")
+    +"&daily=precipitation_sum&start_date="+RR_FROM+"&end_date="+to+"&timezone=UTC";
+  var st=stn("eldiem");
+  var uQ=FLOOD_API+"?latitude="+st.lat+"&longitude="+st.lon
+    +"&daily=river_discharge&start_date="+RR_FROM+"&end_date="+to;
+  var RA=null;
+  return getJSON(uR,"تعذّر جلب أرشيف المطر").then(function(a){
+    var list=(a&&a.length!==undefined)?a:[a], j, n=null, T=null, acc=null, ws=0;
+    for(j=0;j<list.length;j++){
+      var d=list[j]; if(!d||!d.daily) continue;
+      if(!T){ T=d.daily.time; n=T.length; acc=[]; for(i=0;i<n;i++) acc.push(0); }
+      var p=d.daily.precipitation_sum, w=cells[j]?cells[j].w:1;
+      for(i=0;i<n;i++){ var v=p[i]; if(v===null||v===undefined||isNaN(v)) v=0; acc[i]+=v*w; }
+      ws+=w;
+    }
+    if(!T||!ws) throw new Error("أرشيف المطر فارغ");
+    for(i=0;i<acc.length;i++) acc[i]/=ws;
+    RA={ t:T, r:acc };
+    return getJSON(uQ,"تعذّر جلب أرشيف تصرف الديم");
+  }).then(function(a){
+    var d=(a&&a.length!==undefined)?a[0]:a;
+    if(!d||!d.daily) throw new Error("أرشيف التصرف فارغ");
+    var qm={}, i2;
+    for(i2=0;i2<d.daily.time.length;i2++){
+      var q=d.daily.river_discharge[i2];
+      if(q!==null&&!isNaN(q)) qm[d.daily.time[i2]]=q;
+    }
+    var A=rrApiIndex(RA.r), T=RA.t;
+    /* إسقاط أول ٦٠ يوماً — تسخين مؤشر النضوب */
+    var yrs={}, k;
+    for(k=0;k<T.length;k++) yrs[T[k].slice(0,4)]=1;
+    var years=Object.keys(yrs).sort();
+    var cut=years[Math.max(0, years.length-RR_TEST_YEARS)];
+    var res=[], hi;
+    for(hi=0;hi<RR_HOR.length;hi++){
+      var L=RR_HOR[hi], tr=[], teQ=[], teA=[], teY=[], teD=[], climAcc={}, climN={};
+      for(k=60;k+L<T.length;k++){
+        var q0=qm[T[k]], y=qm[T[k+L]];
+        if(q0===undefined||y===undefined) continue;
+        var row={ q:q0, a:A[k], y:y };
+        var doy=T[k+L].slice(5);
+        if(T[k]<cut+"-01-01"){
+          tr.push(row);
+          climAcc[doy]=(climAcc[doy]||0)+y; climN[doy]=(climN[doy]||0)+1;
+        } else { teQ.push(q0); teA.push(A[k]); teY.push(y); teD.push(doy); }
+      }
+      if(tr.length<300||teY.length<60){ res.push({L:L, ok:false, reason:"عيّنة غير كافية"}); continue; }
+      var co=rrRegress(tr);
+      if(!co){ res.push({L:L, ok:false, reason:"تعذّر الحلّ"}); continue; }
+      /* الاستمرار: انحدار على Q وحده من نفس بيانات التدريب */
+      var sq=0,sy=0,sqq=0,sqy=0,i3;
+      for(i3=0;i3<tr.length;i3++){ sq+=tr[i3].q; sy+=tr[i3].y; sqq+=tr[i3].q*tr[i3].q; sqy+=tr[i3].q*tr[i3].y; }
+      var den=tr.length*sqq-sq*sq;
+      var pa=den?((tr.length*sqy-sq*sy)/den):0, pb=(sy-pa*sq)/tr.length;
+      var gm=sy/tr.length;
+      var pM=[], pP=[], pC=[];
+      for(i3=0;i3<teY.length;i3++){
+        pM.push(co[0]*teQ[i3]+co[1]*teA[i3]+co[2]);
+        pP.push(pa*teQ[i3]+pb);
+        pC.push(climN[teD[i3]]? climAcc[teD[i3]]/climN[teD[i3]] : gm);
+      }
+      var rM=rrRmse(pM,teY), rP=rrRmse(pP,teY), rC=rrRmse(pC,teY);
+      res.push({ L:L, ok:true, co:co, rmse:rM, rmsePers:rP, rmseClim:rC,
+        gainPers:(rP-rM)/rP*100, gainClim:(rC-rM)/rC*100,
+        nTrain:tr.length, nTest:teY.length,
+        skill:(rM<rP && rM<rC) });
+    }
+    ST.rr.fit={ at:Date.now(), from:RR_FROM, to:to, cells:cells.length,
+      testFrom:cut+"-01-01", res:res };
+    ST.rr.busy=false;
+    auditLog("معايرة نموذج المطر←تصرف", cells.length+" خلية · اختبار من "+cut);
+    render(); return ST.rr.fit;
+  }).catch(function(e){
+    ST.rr.busy=false; ST.rr.err=e.message||String(e);
+    netErr("تعذّرت معايرة نموذج المطر", e); render(); return null;
+  });
+}
+/* مؤشر المطر الحى لحوض الأزرق — يشمل أيام التنبؤ */
+function rrLiveIndex(){
+  if(!ST.rain||!ST.rain.t) return null;
+  var d=[], i;
+  for(i=0;i<ST.rain.t.length;i++){
+    var m=arealMean("blue", i, i);
+    d.push(m===null?0:m);
+  }
+  return { t:ST.rain.t, a:rrApiIndex(d) };
+}
+function rrPredict(){
+  var F=ST.rr.fit; if(!F||!ST.q||!ST.q.eldiem) return null;
+  var LI=rrLiveIndex(); if(!LI) return null;
+  var k=rainNowIdx(), q0=cur("eldiem");
+  if(q0===null||k>=LI.a.length) return null;
+  var out=[], i;
+  for(i=0;i<F.res.length;i++){
+    var r=F.res[i];
+    if(!r.ok||!r.skill){ out.push({L:r.L, ok:false, reason:r.ok?"لا مهارة مُثبَتة":r.reason}); continue; }
+    var v=r.co[0]*q0+r.co[1]*LI.a[k]+r.co[2];
+    var dt=new Date(Date.now()+r.L*864e5).toISOString().slice(0,10);
+    out.push({ L:r.L, ok:true, v:(v<0?0:v), date:dt, rmse:r.rmse, gain:r.gainClim });
+  }
+  return { q0:q0, api:LI.a[k], rows:out };
+}
+function rrPanel(){
+  var ctl='<div class="ctrl"><button class="btn solid" id="rr-fit"'+(ST.rr.busy?" disabled":"")+'>'
+    +(ST.rr.busy?"⏳ جارٍ الجلب والمعايرة…":"⚙ عايِر نموذج المطر ← تصرف")+'</button></div>';
+  var head=panel("نموذج المطر ← تصرف","إحصائى مُعاير ومُختبَر على سنوات محجوبة", ctl,
+    'المؤشر: مطر حوض الأزرق متراكماً بنضوب '+RR_DECAY+' يومياً. '
+    +'المعادلة: <b>تصرف الديم بعد L يوماً = a·تصرف اليوم + b·مؤشر المطر + c</b>. '
+    +'المعايرة على أرشيف من '+RR_FROM+'، <b>والاختبار على آخر سنتين لم تدخلا المعايرة</b>، '
+    +'ومقارنة بمرجعين: الاستمرار والمناخيات.');
+  if(ST.rr.err)
+    head+='<div class="banner danger"><span>⚠</span><div><b>آخر خطأ:</b> '+esc(ST.rr.err)+'</div></div>';
+  var F=ST.rr.fit;
+  if(!F) return head+panel("لم يُعاير بعد","اضغط الزر أعلاه",
+    '<p class="note">يُجلب أرشيف المطر لخلايا الحوض الأزرق وأرشيف تصرف الديم منذ '+RR_FROM+'. '
+    +'حمولة كبيرة نسبياً تُجلب مرة واحدة.</p>');
+
+  var rows="", i;
+  for(i=0;i<F.res.length;i++){
+    var r=F.res[i];
+    if(!r.ok){ rows+='<tr><td><b>+'+r.L+' يوماً</b></td><td colspan="6" style="color:var(--muted)">'+esc(r.reason)+'</td></tr>'; continue; }
+    rows+='<tr><td><b>+'+r.L+' يوماً</b></td>'
+      +'<td class="num">'+nf(r.rmseClim,0)+'</td>'
+      +'<td class="num">'+nf(r.rmsePers,0)+'</td>'
+      +'<td class="num"><b>'+nf(r.rmse,0)+'</b></td>'
+      +'<td class="num" style="color:'+(r.gainPers>0?"#4d7c5a":"#b8503f")+'">'+(r.gainPers>0?"+":"")+nf(r.gainPers,0)+'٪</td>'
+      +'<td class="num" style="color:'+(r.gainClim>0?"#4d7c5a":"#b8503f")+'">'+(r.gainClim>0?"+":"")+nf(r.gainClim,0)+'٪</td>'
+      +'<td>'+(r.skill?'<span class="pill green">مهارة مُثبَتة</span>':'<span class="pill danger">لا مهارة</span>')+'</td></tr>';
+  }
+  var s=head+panel("نتيجة الاختبار على سنوات محجوبة","جذر متوسط مربع الخطأ (م³/ث) — الأقل أفضل",
+    '<div class="tb-wrap"><table class="tb"><thead><tr><th>الأفق</th><th>المناخيات</th><th>الاستمرار</th>'
+    +'<th>النموذج</th><th>تحسّن على الاستمرار</th><th>تحسّن على المناخيات</th><th>الحكم</th>'
+    +'</tr></thead><tbody>'+rows+'</tbody></table></div>',
+    'التدريب حتى '+esc(F.testFrom)+' والاختبار بعده — <b>بيانات لم يرها النموذج أثناء المعايرة</b>. '
+    +'الأفق الذى لا يتفوّق على المرجعين يُعلَّم «لا مهارة» ولا يُعرض له تنبؤ. '
+    +'الهدف المُتنبَّأ به هو <b>تصرف GloFAS عند الديم</b> لا قياس ميدانى — فالنموذج يمدّ أفق النموذج لا يستبدل القياس.');
+
+  var P=rrPredict();
+  if(P){
+    var prows="";
+    for(i=0;i<P.rows.length;i++){
+      var p=P.rows[i];
+      prows+='<tr><td><b>+'+p.L+' يوماً</b></td>'
+        +'<td class="num" style="direction:ltr">'+(p.ok?esc(p.date):"—")+'</td>'
+        +'<td class="num">'+(p.ok?"<b>"+nf(p.v,0)+"</b>":"—")+'</td>'
+        +'<td class="num">'+(p.ok?"±"+nf(p.rmse,0):"—")+'</td>'
+        +'<td>'+(p.ok? stampPill("model") : '<span class="pill danger">'+esc(p.reason)+'</span>')+'</td></tr>';
+    }
+    s+=panel("التنبؤ الإحصائى الحالى","تصرف الديم المتوقع — امتداد للأفق",
+      '<div class="grid g3">'
+      +kpi("Q","","تصرف الديم اليوم", nf(P.q0,0),"م³/ث","نقطة الانطلاق")
+      +kpi("☂","","مؤشر المطر المتراكم", nf(P.api,0),"مم","نضوب "+RR_DECAY+" يومياً")
+      +kpi("⌁","","أقصى أفق بمهارة", (function(){ var mx=0,j; for(j=0;j<P.rows.length;j++) if(P.rows[j].ok) mx=P.rows[j].L; return mx?("+"+mx):"—"; })(),"يوم","ما بعده بلا مهارة مُثبَتة")
+      +'</div>'
+      +'<div class="tb-wrap"><table class="tb"><thead><tr><th>الأفق</th><th>التاريخ</th>'
+      +'<th>التصرف المتوقع (م³/ث)</th><th>الخطأ النموذجى</th><th>الحالة</th>'
+      +'</tr></thead><tbody>'+prows+'</tbody></table></div>',
+      '<b>هذا تنبؤ إحصائى مستقل عن ماسكينجم ولا يدخل فى التتبّع ولا فى الإنذار.</b> '
+      +'قيمته أنه يمتد إلى <b>+٤٥ يوماً</b> بينما نافذة GloFAS ثلاثون، وأنه يعطى إشارة مبكرة من المطر '
+      +'قبل ظهورها فى التصرف. والخطأ المعروض هو خطأ الاختبار على السنوات المحجوبة لا حدّ يقين نظرى.');
+  }
+  return s;
+}
 function secRain(){
   if(!ST.rain) return panel("المنابع","جارٍ تحميل أمطار الأحواض", skel(5));
   var k=rainNowIdx(), ri=rainIndex(), i;
@@ -3661,6 +3941,7 @@ function secRain(){
     '<b>زمن التركيز تقديرى إرشادى</b> غير معايَر بقياس — يعطى ترتيب المقدار لا الرقم الدقيق. '
     +'زمن التتبّع مأخوذ من معاملات K الفعلية المعمول بها الآن، فيتغيّر مع أى تعديل فى قسم التتبّع. '
     +'أحواض السوباط والاستوائى مخمّدة عبر منطقة السدّ إلى حدّ يجعل مطرها إشارة موسمية لا إشارة إنذار.');
+  s+=rrPanel();
   return s;
 }
 
@@ -4411,6 +4692,8 @@ function secSources(){
   var rows='<tr><td><b>تصرفات الأنهار</b></td><td>GloFAS v4 عبر Open-Meteo Flood API</td>'
     +'<td>يومى · '+PAST+' ماضية + '+FUT+' تنبؤ · '+NMEM+' عضواً · أرشيف من ٢٠٠٦</td><td>حرّ بلا مفتاح</td></tr>'
     +'<tr><td><b>الأمطار</b></td><td>Open-Meteo Forecast</td><td>يومى · ٢١ ماضية + ١٤ تنبؤ</td><td>حرّ بلا مفتاح</td></tr>'
+    +'<tr><td><b>أرشيف المطر (للمعايرة)</b></td><td>Open-Meteo Archive (ERA5)</td>'
+    +'<td>خلايا الحوض الأزرق منذ '+RR_FROM+'</td><td>حرّ بلا مفتاح — يُجلب عند الطلب</td></tr>'
     +'<tr><td><b>مناسيب البحيرات</b></td><td>DAHITI عبر api/v2 (DGFI-TUM)</td><td>ألتيمترى متعدد المهام · ~١٠–٢٧ يوماً للدورة</td><td>مفتاح مجانى بالتسجيل</td></tr>'
     +'<tr><td><b>مناسيب المجرى</b></td><td>DAHITI — محطات افتراضية نهرية (٣٣٨ داخل حوض النيل) · داخل قسم الألتيمترى بمفتاح بحيرات/مجرى</td>'
     +'<td>الخرطوم ودنقلا وعطبرة وحلفا والديم · رصد منذ '+RLV_FROM+'</td><td>نفس المفتاح — <b>رصد لا نمذجة</b></td></tr>'
@@ -4420,6 +4703,8 @@ function secSources(){
     +'<td>٤ نطاقات · تكرار ١٢ يوماً لكل مدار · ~١٦٠ يوماً للخلف</td><td>باعتماد OAuth من الجهاز أو القاعدة</td></tr>'
     +'<tr><td><b>المعايرة المرجعية</b></td><td>متوسطات النظام الطبيعى المنشورة ÷ متوسط أرشيف GloFAS</td>'
     +'<td>ثمانى محطات · أرشيف منذ '+CAL_FROM+'</td><td>قابلة للتعديل والاعتماد من القاعدة</td></tr>'
+    +'<tr><td><b>البخر والفواقد</b></td><td>FAO WaPOR v3 (AETI) عبر وسيط Cloudflare</td>'
+    +'<td>عشرى · بحيرة النهضة والسدود</td><td>بلا مفتاح — الوسيط يحلّ CORS</td></tr>'
     +'<tr><td><b>الرأى الثانى</b></td><td>Google Flood Forecasting API v1</td>'
     +'<td>محطات السودان ومصر · تنبؤ حتى ٧ أيام · إثيوبيا غير مغطاة</td><td>مفتاح بقائمة انتظار — مقيَّد بالمُحيل</td></tr>'
     +'<tr><td><b>تشغيل الخزانات</b></td><td>مركَّب: ألتيمترى DAHITI + منحنى منسوب–حجم تقريبى + وارد GloFAS</td>'
@@ -4560,6 +4845,134 @@ function calibrateAllSeason(H){
   var out=[],i;
   for(i=0;i<ST.reaches.length;i++) out.push(calibrateReachSeason(i,H));
   return out;
+}
+function nudgePanel(){
+  var rt=runRouting(), n=rt?rt.ndg:null;
+  var ctl='<div class="ctrl"><label><input type="checkbox" id="ndg-on"'+(ST.nudge?" checked":"")+'> '
+    +'تفعيل تصحيح الحالة عند حلفا</label></div>';
+  var body=ctl;
+  if(ST.nudge&&n){
+    body+='<div class="grid g3">'
+      +kpi("⊙", n.src==="corr"?"green":"", "المرساة اليوم", nf(n.anchor,0), "م³/ث",
+           n.src==="corr"?"قياس ميدانى مصحَّح":"قيمة GloFAS عند حلفا")
+      +kpi("Δ", Math.abs(n.off)>500?"sand":"", "الفارق المُصحَّح", (n.off>0?"+":"")+nf(n.off,0), "م³/ث",
+           "المُتتبَّع الخام "+nf(n.raw,0))
+      +kpi("◷","", "مدى التلاشى", nf(n.L,0), "يوم", "كامل اليوم ← صفر عند +"+n.L)
+      +'</div>';
+  } else if(ST.nudge){
+    body+='<p class="note">لا مرساة متاحة الآن (قيمة حلفا غير محمَّلة).</p>';
+  } else {
+    body+='<p class="note">التصحيح موقوف — المعروض تتبّع خام من الديم بلا ربط بآخر قيمة معروفة عند حلفا.</p>';
+  }
+  return panel("تصحيح الحالة","ربط التتبّع بآخر قيمة معروفة عند المخرج", body,
+    'التتبّع يبدأ من الديم فيتراكم انحرافه على ٢٬٦٢٠ كم. التصحيح يزيح المُتتبَّع ليطابق المرساة اليوم، '
+    +'ثم <b>يتلاشى خطياً حتى الصفر عند +'+NUDGE_L+' يوماً</b> — لأن الأفق البعيد تحكمه الأمطار لا الحالة الابتدائية. '
+    +'<b>يُطبَّق على المخرج عند حلفا وعلى أعضاء المروحة</b>، ولا يُطبَّق على المقاطع الوسيطة حتى يبقى '
+    +'الاتزان الحجمى وحفظ الكتلة محسوبين على الأرقام الخام. '
+    +'وحين تُدخل قياساتك الميدانية تصير المرساة <b>مقيسة</b> لا مُنمذَجة، وهذا هو مدخل بياناتك إلى قلب التنبؤ.');
+}
+
+/* =====================================================================
+   معايرة متعددة المواسم — الوسيط عبر السنوات لا موسم واحد
+   موسم واحد قد يكون شاذاً (فيضان استثنائى أو موسم مبتور)، والوسيط
+   يقاوم ذلك. ولا يُحتسب موسم إلا إذا كان قابلاً للتعريف وذا ذروة داخلية.
+   ===================================================================== */
+var CALM_YEARS = [2019,2020,2021,2022,2023,2024,2025];
+function seasonFetch(year){
+  var ids=["eldiem","bnkhart","khartoum","shendi","atbara","merowe","halfa"];
+  var lats=[], lons=[], i;
+  for(i=0;i<ids.length;i++){ var st=stn(ids[i]); lats.push(st.lat); lons.push(st.lon); }
+  var url=FLOOD_API+"?latitude="+lats.join(",")+"&longitude="+lons.join(",")
+    +"&daily=river_discharge&start_date="+year+"-05-01&end_date="+year+"-12-31";
+  return getJSON(url,"تعذّر جلب موسم "+year).then(function(arr){
+    var list=(arr&&arr.length!==undefined)?arr:[arr], H={}, j;
+    for(j=0;j<ids.length;j++){
+      var d=list[j];
+      if(d&&d.daily) H[ids[j]]={t:d.daily.time, q:d.daily.river_discharge};
+    }
+    return H;
+  });
+}
+function calMRun(){
+  ST.calM.running=true; ST.calM.done=0; ST.calM.res={}; ST.calM.fail=[]; render();
+  var i=0;
+  function step(){
+    if(i>=CALM_YEARS.length){
+      ST.calM.running=false;
+      auditLog("معايرة متعددة المواسم", Object.keys(ST.calM.res).length+" موسماً نجح");
+      render(); return true;
+    }
+    var y=CALM_YEARS[i++];
+    return seasonFetch(y).then(function(H){
+      if(H&&H.eldiem) ST.calM.res[y]=calibrateAllSeason(H);
+      else ST.calM.fail.push(y);
+      ST.calM.done=i; render();
+      return new Promise(function(res){ setTimeout(res, 1200); });
+    }).catch(function(){
+      ST.calM.fail.push(y); ST.calM.done=i; render();
+      return new Promise(function(res){ setTimeout(res, 1500); });
+    }).then(step);
+  }
+  return Promise.resolve(step()).catch(function(){ ST.calM.running=false; render(); });
+}
+function med(a){
+  if(!a.length) return null;
+  var b=a.slice().sort(function(x,y){ return x-y; }), n=b.length;
+  return (n%2)? b[(n-1)/2] : (b[n/2-1]+b[n/2])/2;
+}
+function calMMedian(){
+  var out=[], i, ys=Object.keys(ST.calM.res);
+  for(i=0;i<ST.reaches.length;i++){
+    var K=[], X=[], N=[], kge=[], used=[];
+    ys.forEach(function(y){
+      var c=ST.calM.res[y][i];
+      if(!c||!c.best||!c.reliable) return;
+      K.push(c.best.K); X.push(c.best.x); N.push(c.best.n);
+      kge.push(c.best.m.KGE); used.push(y);
+    });
+    out.push({ idx:i, n:K.length, used:used,
+      K:med(K), x:med(X), nSub:med(N), kge:med(kge) });
+  }
+  return out;
+}
+function calMPanel(){
+  var ctl='<div class="ctrl">'
+    +'<button class="btn solid" id="calm-run"'+(ST.calM.running?" disabled":"")+'>'
+      +(ST.calM.running?("⏳ "+ST.calM.done+"/"+CALM_YEARS.length+" موسماً…"):"⚙ عايِر على "+CALM_YEARS.length+" مواسم")+'</button>'
+    +(Object.keys(ST.calM.res).length?'<button class="btn" id="calm-apply">✓ اعتماد الوسيط للمقاطع الموثوقة</button>':"")
+    +(ST.reachesPrev?'<button class="btn" id="calm-undo">↺ رجوع</button>':"")+'</div>';
+  var ys=Object.keys(ST.calM.res).sort();
+  if(!ys.length)
+    return panel("المعايرة متعددة المواسم","الوسيط عبر السنوات — أمتن من موسم واحد", ctl,
+      'يجلب مواسم '+CALM_YEARS[0]+'–'+CALM_YEARS[CALM_YEARS.length-1]+' واحداً تلو الآخر (بفاصل زمنى تفادياً لحد الطلبات)، '
+      +'ويعاير كل مقطع على كل موسم، ثم يأخذ <b>الوسيط</b> للمواسم الموثوقة وحدها '
+      +'(قابلية تعريف ≥ ٠٫٥ وذروة داخلية وKGE ≥ ٠٫٧٥).');
+  var M=calMMedian(), rows="", i;
+  for(i=0;i<ST.reaches.length;i++){
+    var R=ST.reaches[i], m=M[i], cells="";
+    ys.forEach(function(y){
+      var c=ST.calM.res[y][i];
+      cells+='<td class="num">'+(c&&c.best? (c.reliable? "<b>"+nf(c.best.K,1)+"</b>" : '<span style="color:var(--muted)">'+nf(c.best.K,1)+'</span>') : "—")+'</td>';
+    });
+    rows+='<tr><td><b>'+esc(R.nm)+'</b><div style="font-size:9px;color:var(--muted)">الحالى K='+R.K+'</div></td>'
+      +cells
+      +'<td class="num">'+(m.n?("<b>"+nf(m.K,1)+"</b>"):"—")+'</td>'
+      +'<td class="num">'+(m.n?nf(m.x,2):"—")+'</td>'
+      +'<td class="num">'+(m.n?nf(m.nSub,0):"—")+'</td>'
+      +'<td class="num">'+(m.n?nf(m.kge,3):"—")+'</td>'
+      +'<td>'+(m.n>=3? '<span class="pill green">'+m.n+' مواسم</span>'
+             : (m.n? '<span class="pill sand">'+m.n+' فقط</span>' : '<span class="pill danger">لا موسم موثوق</span>'))+'</td></tr>';
+  }
+  var head="";
+  ys.forEach(function(y){ head+='<th>'+y+'</th>'; });
+  return panel("المعايرة متعددة المواسم","K لكل مقطع فى كل موسم — والوسيط", ctl
+    +'<div class="tb-wrap"><table class="tb"><thead><tr><th>المقطع</th>'+head
+    +'<th>وسيط K</th><th>وسيط x</th><th>وسيط n</th><th>وسيط KGE</th><th>الحالة</th>'
+    +'</tr></thead><tbody>'+rows+'</tbody></table></div>'
+    +(ST.calM.fail.length?'<p class="note">مواسم تعذّر جلبها: '+esc(ST.calM.fail.join(" · "))+'</p>':""),
+    'الأرقام <b>الغامقة</b> مواسم موثوقة دخلت الوسيط، والباهتة استُبعدت لضعف التعريف أو غياب الذروة أو KGE منخفض. '
+    +'<b>لا يُعتمد مقطع إلا بثلاثة مواسم موثوقة فأكثر</b> — وما دونها يظل على معاملاته الحالية. '
+    +'والاعتماد يحفظ المعاملات السابقة للرجوع ويُقيَّد فى سجل التدقيق.');
 }
 function histCalPanel(){
   var yopts="",yi;
@@ -5040,6 +5453,7 @@ function secDam(){
     +'<button class="btn solid" id="dam-alti"'+(ST.alti.loading?" disabled":"")+'>'+(ST.alti.loading?"⏳ جارٍ…":"≋ اجلب المناسيب")+'</button>'
     +'<button class="btn" id="dam-nat"'+(ST.dam.natLoading?" disabled":"")+'>'+(ST.dam.natLoading?"⏳ جارٍ…":"⤓ أرشيف الوارد الطبيعى (٤٠٠ يوم)")+'</button>'
     +'<label>بخر (مم/يوم)</label><input type="number" step="0.5" id="dam-evap" value="'+ST.dam.evap+'" style="width:80px">'
+    +'<span style="font-size:10px;color:var(--muted)">'+(ST.dam.evapSrc==="wapor"?"مقيس من WaPOR":"افتراضى")+'</span>'
     +'</div>';
 
   var s='<div class="banner warn"><span>⚠</span><div>'
@@ -5720,6 +6134,288 @@ function secRlev(){
   return s;
 }
 
+/* =====================================================================
+   ٢٠. WaPOR — تحويل مفترضات إلى قياسات
+   استخدامان محددان لا أكثر:
+   (١) بخر بحيرة سد النهضة — يحلّ محل الافتراض اليدوى ٥ مم/يوم فى معادلة
+       الإطلاق المُقدَّر، فيصير حدٌّ من حدودها الثلاثة مقيساً لا مفترضاً.
+   (٢) فواقد السدود على النيل الأبيض — تفسيرنا لمعامل ٠٫١٥٨ كان قولاً؛
+       هنا يصير رقماً يُراجَع.
+   القيود المعلنة: دورية عشرية لا يومية · التبخر فوق المسطحات المفتوحة أقل
+   موثوقية منه فوق المحاصيل (النماذج مُعايرة للنبات) · الوسيط مجانى بحدّ
+   معالجة ضيق فالقراءة عيّنة صغيرة تُستأنف لا مسح واسع.
+   ===================================================================== */
+var WAPOR_PROXY_DEF = "https://wapor.mohseno2002.workers.dev";
+var WP_NODATA = -9999;
+var WP_TARGETS = {
+  evap: { nm:"بحيرة سد النهضة", unitNote:"بخر فوق المسطح المائى",
+    pts:[[11.22,35.09],[11.30,35.14],[11.15,35.19],[11.05,35.25],[10.95,35.31],[11.38,35.10]] },
+  sudd: { nm:"السدود — بحر الجبل", unitNote:"تبخر–نتح فوق المستنقعات", area:30000,
+    areaNote:"مساحة تقديرية تتغيّر بالموسم",
+    pts:[[7.20,30.20],[7.60,30.60],[8.00,30.10],[8.40,30.70],[6.90,30.90],[8.80,30.30]] },
+  /* بحيرة ناصر: توأمها مؤجَّل بقرارك لغياب منحنى التخزين الرسمى — والبخر
+     لا يحتاج منحنى تخزين، بل مساحة وتبخراً فقط. فالحساب ممكن اليوم. */
+  nasser: { nm:"بحيرة ناصر والنوبة", unitNote:"بخر فوق المسطح المائى", area:5250,
+    areaNote:"المساحة عند منسوب التشغيل — ضع رقم السد العالى المعتمد متى توفّر",
+    pts:[[23.80,32.80],[23.40,32.75],[23.00,32.60],[22.60,32.20],[22.30,31.60],[21.90,31.30]] }
+};
+function wpArea(kind){
+  var ov=ST.wp.areaOv[kind];
+  if(ov!==undefined&&ov>0) return ov;
+  return WP_TARGETS[kind].area||0;
+}
+function waporProxy(){
+  try{ var v=localStorage.getItem("mwri_wapor_proxy"); if(v!==null&&v!=="") return v; }catch(e){}
+  return WAPOR_PROXY_DEF;
+}
+function waporGet(path){
+  return fetch(waporProxy()+path).then(function(r){
+    return r.text().then(function(tx){
+      if(!r.ok) throw new Error("HTTP "+r.status+" — "+String(tx).slice(0,140));
+      var j=null;
+      try{ j=JSON.parse(tx); }catch(e){ throw new Error("رد غير JSON: "+String(tx).slice(0,120)); }
+      if(j&&j.ok===false) throw new Error(String(j.error||"خطأ من الوسيط").slice(0,140));
+      return j;
+    });
+  });
+}
+/* قائمة الملفات المتاحة — تعود غير مرتّبة وتحتاج size كبيراً (درس تطبيق الجيزة) */
+function waporRasters(mapset){
+  if(ST.wp.rasters&&ST.wp.rasters.ms===mapset) return Promise.resolve(ST.wp.rasters.list);
+  return waporGet("/rasters?mapset="+encodeURIComponent(mapset)+"&size=2000").then(function(d){
+    var arr=(d&&(d.rasters||d.items||d.data))||(d&&d.length!==undefined?d:[]), out=[], i;
+    for(i=0;i<arr.length;i++){
+      var r=arr[i];
+      var nm=(typeof r==="string")? r : (r.code||r.rasterId||r.name||"");
+      if(nm) out.push(nm);
+    }
+    out.sort();
+    ST.wp.rasters={ ms:mapset, list:out };
+    return out;
+  });
+}
+function waporAt(la, lo, raster){
+  /* الوسيط قد يفترض مجموعة افتراضية لا تطابق اسم الملف فيرد 404 —
+     نرسل mapset صراحةً، وهو معامل غير ضارّ إن تجاهله */
+  return waporGet("/at?lat="+la+"&lon="+lo+"&mapset="+encodeURIComponent(ST.wp.mapset)
+                  +"&raster="+encodeURIComponent(raster)).then(function(d){
+    var v=(d.value_mm!==undefined&&d.value_mm!==null)? d.value_mm : d.raw;
+    if(v===undefined||v===null||isNaN(v)) return null;
+    v=Number(v);
+    if(v<=WP_NODATA+1) return null;
+    return v;
+  });
+}
+function wpKey(kind, raster, i){ return kind+"|"+raster+"|"+i; }
+/* قائمة /rasters تُرجع صفحة أولى بحدّ ١٠٠ اسماً وغير مرتّبة زمنياً، فذيلها
+   ليس أحدث العشريات. نبنى الأسماء من التواريخ مع تأخّر نشر، ثم نتقاطع مع
+   القائمة إن توفّرت. و404 يعنى «عشرية غير منشورة» فتُتخطّى ولا تُحتسب إخفاقاً. */
+var WP_LAG_DEK = 5;
+function wpDekadName(ms, y, m, d){
+  return "WAPOR-3."+ms+"."+y+"-"+("0"+m).slice(-2)+"-D"+d;
+}
+function wpRecentDekads(ms, n){
+  var out=[], now=new Date(), y=now.getUTCFullYear(), m=now.getUTCMonth()+1;
+  var day=now.getUTCDate(), d=(day<=10)?1:((day<=20)?2:3), i;
+  for(i=0;i<WP_LAG_DEK+n;i++){
+    if(i>=WP_LAG_DEK) out.push(wpDekadName(ms,y,m,d));
+    d--; if(d<1){ d=3; m--; if(m<1){ m=12; y--; } }
+  }
+  return out;
+}
+/* قراءة تراكمية قابلة للاستئناف — كل ضغطة تملأ الناقص فقط */
+function wpRun(){
+  var kind=ST.wp.kind, T=WP_TARGETS[kind];
+  ST.wp.busy=true; ST.wp.err=""; ST.wp.fails=0; render();
+  return waporRasters(ST.wp.mapset).catch(function(){ return []; }).then(function(list){
+    var dek=wpRecentDekads(ST.wp.mapset, ST.wp.nDek);
+    if(list&&list.length){
+      var hit={}, z;
+      for(z=0;z<list.length;z++) hit[list[z]]=1;
+      var inter=[];
+      for(z=0;z<dek.length;z++) if(hit[dek[z]]) inter.push(dek[z]);
+      /* القائمة مبتورة، فلا نستبعد إلا إذا بقى ما يكفى */
+      if(inter.length>=Math.min(2, ST.wp.nDek)) dek=inter;
+    }
+    var jobs=[], di, pi;
+    for(di=0;di<dek.length;di++)
+      for(pi=0;pi<T.pts.length;pi++)
+        if(ST.wp.got[wpKey(kind,dek[di],pi)]===undefined) jobs.push({r:dek[di], p:pi});
+    var n=0;
+    function step(){
+      if(!jobs.length||ST.wp.fails>=5){
+        ST.wp.busy=false;
+        ST.wp.prog=n+" قراءة جديدة"+(ST.wp.fails>=5?" — توقّف بعد خمسة إخفاقات متتالية، اضغط للاستئناف":"");
+        auditLog("قراءة WaPOR", kind+" · "+n+" قراءة");
+        render(); return true;
+      }
+      var j=jobs.shift();
+      return waporAt(T.pts[j.p][0], T.pts[j.p][1], j.r).then(function(v){
+        ST.wp.got[wpKey(kind,j.r,j.p)]=(v===null?null:v);
+        ST.wp.fails=0; n++;
+        if(n%3===0){ ST.wp.prog="جارٍ… "+n+"/"+(n+jobs.length); render(); }
+        return new Promise(function(res){ setTimeout(res, 250); });
+      }).catch(function(e){
+        var msg=e.message||String(e);
+        if(msg.indexOf("404")>=0){
+          /* عشرية غير منشورة — تُعلَّم وتُتخطّى بلا احتساب إخفاق */
+          ST.wp.got[wpKey(kind,j.r,j.p)]=null;
+          ST.wp.err="عشرية غير منشورة بعد: "+j.r;
+          return new Promise(function(res){ setTimeout(res, 120); });
+        }
+        ST.wp.fails++; ST.wp.err=msg;
+        return new Promise(function(res){ setTimeout(res, 900); });
+      }).then(step);
+    }
+    return step();
+  }).catch(function(e){
+    ST.wp.busy=false; ST.wp.err=e.message||String(e);
+    netErr("تعذّرت قراءة WaPOR", e); render(); return null;
+  });
+}
+function wpStats(kind){
+  var T=WP_TARGETS[kind], k, vals=[], per={}, dek={};
+  for(k in ST.wp.got){
+    if(!Object.prototype.hasOwnProperty.call(ST.wp.got,k)) continue;
+    var p=k.split("|");
+    if(p[0]!==kind) continue;
+    var v=ST.wp.got[k];
+    dek[p[1]]=1;
+    if(v===null) continue;
+    vals.push(v);
+    if(!per[p[2]]) per[p[2]]=[];
+    per[p[2]].push(v);
+  }
+  if(!vals.length) return null;
+  var mean=FIT.mean(vals);
+  return { n:vals.length, dekads:Object.keys(dek).length, mean:mean,
+    mmDay:mean/10, mmYear:mean*36, per:per,
+    min:Math.min.apply(null,vals), max:Math.max.apply(null,vals) };
+}
+/* الفاقد الضمنى فى معامل المعايرة للنيل الأبيض — للمقارنة مع المقيس */
+function wpImpliedLoss(){
+  var M=ST.cal.model, R=calRef();
+  if(!M||!M.jaulia||!R.jaulia) return null;
+  var d=M.jaulia.mean-R.jaulia;            /* م³/ث */
+  if(!(d>0)) return null;
+  return { qps:d, bcm:d*31.536/1000 };      /* م³/ث → مليار م³/سنة */
+}
+
+function secWapor(){
+  var kind=ST.wp.kind, T=WP_TARGETS[kind];
+  var ctl='<div class="ctrl"><label>الهدف:</label>'
+    +'<button class="btn mini'+(kind==="evap"?" solid":"")+'" data-wpk="evap">بخر بحيرة النهضة</button>'
+    +'<button class="btn mini'+(kind==="sudd"?" solid":"")+'" data-wpk="sudd">فواقد السدود</button>'
+    +'<button class="btn mini'+(kind==="nasser"?" solid":"")+'" data-wpk="nasser">بخر بحيرة ناصر</button>'
+    +'<label>المجموعة</label><select id="wp-ms">'
+      +'<option value="L1-AETI-D"'+(ST.wp.mapset==="L1-AETI-D"?" selected":"")+'>L1 (300 م)</option>'
+      +'<option value="L2-AETI-D"'+(ST.wp.mapset==="L2-AETI-D"?" selected":"")+'>L2 (100 م)</option>'
+    +'</select>'
+    +'<label>عشريات</label><input type="number" min="1" max="72" step="1" id="wp-nd" value="'+ST.wp.nDek+'" style="width:70px">'
+    +'<button class="btn mini'+(ST.wp.nDek===36?" solid":"")+'" data-wpn="36">سنة كاملة (٣٦)</button>'
+    +'<button class="btn mini'+(ST.wp.nDek===6?" solid":"")+'" data-wpn="6">٦</button>'
+    +'<button class="btn solid" id="wp-run"'+(ST.wp.busy?" disabled":"")+'>'
+      +(ST.wp.busy?"⏳ جارٍ القراءة…":"⤓ اقرأ / استأنف")+'</button>'
+    +'<button class="btn" id="wp-proxy">⚙ الوسيط</button></div>';
+
+  var s='<div class="banner warn"><span>⚠</span><div>'
+    +'<b>دورية عشرية لا يومية</b> (كل ١٠ أيام، وبتأخر أسابيع) — تصلح للفواقد والمتوسطات '
+    +'<b>ولا تدخل التنبؤ اليومى ولا الإنذار</b>. '
+    +'والتبخر فوق المسطحات المفتوحة <b>أقل موثوقية</b> منه فوق المحاصيل لأن النماذج مُعايرة للنبات، '
+    +'فالرقم تقدير مسنود بالرصد لا قياس مباشر.</div></div>';
+  s=panel("WaPOR — الفواقد المقيسة","تحويل مفترضات المعادلة إلى قياسات", ctl+s,
+    'المصدر: <b>FAO WaPOR v3</b> — التبخر–نتح الفعلى (AETI) عبر وسيطك على Cloudflare '
+    +'(<span style="direction:ltr;display:inline-block">'+esc(waporProxy())+'</span>). '
+    +'القراءة <b>تراكمية قابلة للاستئناف</b>: كل ضغطة تملأ الناقص فقط، لأن حدّ معالجة الوسيط المجانى ضيق.');
+
+  if(ST.wp.err)
+    s+='<div class="banner danger"><span>⚠</span><div><b>آخر خطأ من الوسيط:</b> '+esc(ST.wp.err)+'</div></div>';
+  if(ST.wp.prog)
+    s+='<div class="banner info"><span>◷</span><div>'+esc(ST.wp.prog)+'</div></div>';
+
+  var S=wpStats(kind);
+  if(!S) return s+panel("لم تُقرأ قيم بعد","اضغط «اقرأ / استأنف»",
+    '<p class="note">النقاط: '+T.pts.length+' داخل '+esc(T.nm)+' · العشريات المطلوبة: '+ST.wp.nDek+'. '
+    +'إجمالى القراءات '+(T.pts.length*ST.wp.nDek)+' وكل قراءة تستغرق أقل من ثانية.</p>');
+
+  if(kind==="evap"){
+    var okRange=(S.mmDay>=1&&S.mmDay<=12);
+    s+='<div class="grid g3">'
+      +kpi("◉", okRange?"green":"danger", "البخر المقيس", nf(S.mmDay,2), "مم/يوم",
+           S.dekads+" عشريات · "+S.n+" قراءة صالحة")
+      +kpi("Σ","", "المكافئ السنوى", nf(S.mmYear/1000,2), "م/سنة", "المنشور لبحيرات المنطقة ١٫٦–٢٫٠ م")
+      +kpi("⚙", (ST.dam.evap===Math.round(S.mmDay*10)/10)?"green":"sand", "المستخدم فى حساب الإطلاق",
+           nf(ST.dam.evap,1), "مم/يوم", (ST.dam.evapSrc==="wapor")?"مقيس من WaPOR":"افتراضى يدوى")
+      +'</div>'
+      +'<div class="actions" style="margin-top:10px">'
+      +'<button class="btn solid" id="wp-apply"'+(okRange?"":" disabled")+'>✓ اعتمد القيمة المقيسة فى معادلة الإطلاق</button>'
+      +'<button class="btn" id="wp-reset">↺ رجوع للافتراضى ٥ مم/يوم</button></div>';
+    if(!okRange)
+      s+='<div class="banner danger"><span>⚠</span><div>القيمة خارج المدى المعقول (١–١٢ مم/يوم) — '
+        +'الأرجح أن نقطة أو أكثر خارج المسطح المائى أو على سحابة. لا تُعتمد.</div></div>';
+  } else {
+    var ar=wpArea(kind);
+    var imp=(kind==="sudd")? wpImpliedLoss() : null;
+    var lossBcm=(S.mmYear/1000)*ar*1e6/1e9;   /* م/سنة × كم² → مليار م³ */
+    s+='<div class="ctrl"><label>المساحة المفترضة (كم²)</label>'
+      +'<input type="number" step="250" id="wp-area" value="'+ar+'" style="width:110px">'
+      +'<span style="font-size:10px;color:var(--muted)">'+esc(T.areaNote||"")+'</span></div>';
+    s+='<div class="grid g3">'
+      +kpi("◉","", (kind==="nasser"?"البخر المقيس":"التبخر–نتح المقيس"), nf(S.mmYear/1000,2), "م/سنة",
+           S.dekads+" عشريات · "+S.n+" قراءة")
+      +kpi("Σ","", (kind==="nasser"?"حجم البخر السنوى":"الفاقد بالبخر المقدَّر"), nf(lossBcm,1), "مليار م³/سنة",
+           "على مساحة "+nf(ar,0)+" كم²")
+      +(kind==="nasser"
+        ? kpi("≋","", "منسوب البحيرة المرصود",
+              (function(){ var D=ST.alti.data.nasser; return (D&&D.series&&D.series.length)? nf(D.series[D.series.length-1].v,2):"—"; })(),
+              "م", "من الألتيمترى — يُجلب من قسم الألتيمترى")
+        : kpi("Δ", imp?"sand":"", "الفاقد الضمنى فى معاملنا", imp?nf(imp.bcm,1):"—", "مليار م³/سنة",
+              imp?"من معامل النيل الأبيض ٠٫١٥٨":"شغّل المعايرة المرجعية أولاً"))
+      +'</div>';
+    if(kind==="nasser")
+      s+='<div class="banner info"><span>ℹ</span><div>'
+        +'<b>لماذا صار ممكناً رغم تأجيل توأم البحيرة؟</b> التأجيل كان لغياب <b>منحنى التخزين الرسمى</b>، '
+        +'والبخر لا يحتاجه — يحتاج مساحة وتبخراً فقط، وكلاهما متاح. '
+        +'<b>والمساحة هى الحدّ الحاكم</b>: الافتراضى تقديرى ويتغيّر بالمنسوب، فضع الرقم المعتمد ليصير الحجم رسمياً. '
+        +'والقيمة المنشورة لبخر البحيرة تُذكر عادةً بحدود عشرة مليارات م³ سنوياً — قارنها بما يخرج هنا.'
+        +'</div></div>';
+    if(imp){
+      var gap=imp.bcm-lossBcm;
+      s+='<div class="banner '+(Math.abs(gap)<imp.bcm*0.35?"ok":"warn")+'"><span>'+(Math.abs(gap)<imp.bcm*0.35?"✓":"⚠")+'</span><div>'
+        +'<b>المقارنة:</b> البخر المقيس يفسّر <b>'+nf(lossBcm/imp.bcm*100,0)+'٪</b> من الفاقد الضمنى فى معامل المعايرة. '
+        +(gap>0? 'والباقى ('+nf(gap,1)+' مليار م³/سنة) <b>لا يفسّره البخر وحده</b> — فجزء من انحياز النموذج على النيل الأبيض سببه شىء آخر: '
+                +'مبالغة فى الجريان المُنمذَج من الهضبة الاستوائية، أو سحب غير ممثَّل، أو الاثنان.'
+              : 'والبخر المقيس يفوق الفاقد الضمنى — راجع مساحة السدود المفترضة أو المرجع المنشور للأبيض.')
+        +'</div></div>';
+    }
+  }
+
+  /* تفصيل النقاط — النقطة الشاذّة تُرى ولا تُخفى */
+  var prows="", pi;
+  for(pi=0;pi<T.pts.length;pi++){
+    var a=S.per[String(pi)]||[];
+    prows+='<tr><td class="num" style="direction:ltr">'+T.pts[pi][0]+', '+T.pts[pi][1]+'</td>'
+      +'<td class="num">'+a.length+'</td>'
+      +'<td class="num">'+(a.length?nf(FIT.mean(a),1):"—")+'</td>'
+      +'<td>'+(a.length? (FIT.mean(a)>S.mean*1.6||FIT.mean(a)<S.mean*0.4
+              ? '<span class="pill sand">شاذّة عن المتوسط</span>' : '<span class="pill green">ضمن النطاق</span>')
+              : '<span class="pill danger">بلا قراءة صالحة</span>')+'</td></tr>';
+  }
+  s+=panel("تفصيل النقاط","القراءة الشاذّة تُعرض ولا تُخفى",
+    '<div class="tb-wrap"><table class="tb"><thead><tr><th>الإحداثى</th><th>قراءات</th>'
+    +'<th>المتوسط (مم/عشرة أيام)</th><th>الحالة</th></tr></thead><tbody>'+prows+'</tbody></table></div>',
+    (ST.wp.nDek<36
+      ? '<b>تنبيه موسمية:</b> المتوسط محسوب على '+ST.wp.nDek+' عشريات متجاورة ثم ضُرب فى ٣٦ ليصير سنوياً — '
+        +'أى أنه يعمّم موسماً واحداً على السنة كلها. والبخر يبلغ ذروته صيفاً وينخفض شتاءً لأقل من نصفه، '
+        +'<b>فالرقم السنوى مبالَغ فيه إن كانت العشريات صيفية</b> ومنقوص إن كانت شتوية. '
+        +'اضغط «سنة كاملة (٣٦)» ليصير المتوسط سنوياً حقيقياً — الثمن '+(T.pts.length*36)+' قراءة وعدة ضغطات استئناف. '
+      : '<b>التغطية سنوية كاملة</b> ('+ST.wp.nDek+' عشرية) فالمتوسط يمثّل دورة البخر بمواسمها. ')
+    +'والنقاط <b>مختارة تقريبياً</b> داخل '+esc(T.nm)+' ولم تُحقَّق على حدود رسمية. '
+    +'نقطة خارج المسطح أو تحت سحابة تعطى قيمة شاذّة — لذلك تُعرض كل نقطة على حدة '
+    +'ليُرى الشاذّ بدل أن يذوب فى متوسط. المدى المقروء: '+nf(S.min,1)+' – '+nf(S.max,1)+' مم/عشرة أيام. '
+    +'<b>وتحويل العشرة أيام إلى يوم بالقسمة على ١٠</b> تقريب — العشرة الثالثة من الشهر ٨ إلى ١١ يوماً.');
+  return s;
+}
 /* ═════ النشرة التنفيذية اليومية — قوالب حتمية لا توليد حر ═════ */
 function bulletinText(){
   var L=[], q=cur("halfa"), lvl=(q!==null&&ST.thr)?alertLevel(q):null;
@@ -5832,6 +6528,7 @@ function render(){
   else if(ST.sec==="sources")  h=secSources();
   else if(ST.sec==="alti")     h=secAlti();
   else if(ST.sec==="dam")      h=secDam();
+  else if(ST.sec==="wapor")    h=secWapor();
   else if(ST.sec==="gfh")      h=secGfh();
   else if(ST.sec==="cert")     h=secCert();
   else if(ST.sec==="install")  h=secInstall();
@@ -6071,6 +6768,77 @@ function bindControls(){
   el=$("dam-evap"); if(el) el.onchange=function(){
     var v=parseFloat(this.value);
     ST.dam.evap=(isNaN(v)||v<0||v>20)?5:v; render();
+  };
+
+  el=$("ndg-on"); if(el) el.onchange=function(){
+    ST.nudge=!!this.checked;
+    auditLog("تبديل تصحيح الحالة", ST.nudge?"مُفعَّل":"مُعطَّل");
+    render();
+  };
+  each("[data-wpk]",function(b){ b.onclick=function(){
+    ST.wp.kind=this.getAttribute("data-wpk"); ST.wp.prog=""; render(); }; });
+  el=$("wp-ms"); if(el) el.onchange=function(){ ST.wp.mapset=this.value; ST.wp.rasters=null; render(); };
+  el=$("wp-nd"); if(el) el.onchange=function(){
+    var v=parseInt(this.value,10); ST.wp.nDek=(isNaN(v)||v<1||v>72)?6:v; render(); };
+  each("[data-wpn]",function(b){ b.onclick=function(){
+    ST.wp.nDek=parseInt(this.getAttribute("data-wpn"),10); render(); }; });
+  el=$("wp-run"); if(el) el.onclick=function(){ wpRun(); };
+  el=$("wp-area"); if(el) el.onchange=function(){
+    var v=parseFloat(this.value), k=ST.wp.kind;
+    if(isNaN(v)||v<=0){ delete ST.wp.areaOv[k]; }
+    else {
+      ST.wp.areaOv[k]=v;
+      var pay={}; pay["area_"+k]=v;
+      MwriDb.patch("apps/"+APPID+"/data/wapor", pay).catch(function(){});
+      auditLog("ضبط مساحة WaPOR", k+" = "+v+" كم²");
+    }
+    render(); };
+  el=$("wp-proxy"); if(el) el.onclick=function(){
+    var cu=waporProxy();
+    var v=window.prompt("رابط وسيط WaPOR (اكتب default للافتراضى):", cu);
+    if(v===null) return;
+    try{ localStorage.setItem("mwri_wapor_proxy", (v==="default")?"":v); }catch(e){}
+    ST.wp.rasters=null; auditLog("ضبط وسيط WaPOR", (v==="default")?"الافتراضى":v.slice(0,60)); render();
+  };
+  el=$("wp-apply"); if(el) el.onclick=function(){
+    var S=wpStats("evap"); if(!S) return;
+    var v=Math.round(S.mmDay*10)/10;
+    if(v<1||v>12){ netErr("قيمة خارج المدى", new Error("البخر المقبول ١–١٢ مم/يوم")); return; }
+    ST.dam.evap=v; ST.dam.evapSrc="wapor";
+    MwriDb.patch("apps/"+APPID+"/data/wapor", {evapMmDay:v, at:Date.now(), n:S.n, dekads:S.dekads}).catch(function(){});
+    auditLog("اعتماد بخر مقيس من WaPOR", v+" مم/يوم على "+S.n+" قراءة");
+    render();
+  };
+  el=$("wp-reset"); if(el) el.onclick=function(){
+    ST.dam.evap=5; ST.dam.evapSrc="افتراضى";
+    auditLog("رجوع لبخر افتراضى", "5 مم/يوم"); render();
+  };
+
+  el=$("rr-fit"); if(el) el.onclick=function(){ rrFit(); };
+  el=$("calm-run"); if(el) el.onclick=function(){ calMRun(); };
+  el=$("calm-apply"); if(el) el.onclick=function(){
+    var M=calMMedian(), det=[], any=false, i;
+    for(i=0;i<M.length;i++) if(M[i].n>=3) any=true;
+    if(!any){ netErr("لا مقطع مؤهل", new Error("لا مقطع بثلاثة مواسم موثوقة فأكثر")); return; }
+    if(!window.confirm("اعتماد وسيط المواسم للمقاطع المؤهلة فقط؟")) return;
+    ST.reachesPrev=JSON.parse(JSON.stringify(ST.reaches));
+    for(i=0;i<M.length;i++){
+      if(M[i].n<3) continue;
+      det.push(ST.reaches[i].nm+": "+ST.reaches[i].K+"/"+ST.reaches[i].x+"/"+ST.reaches[i].n
+        +" ← "+nf(M[i].K,1)+"/"+nf(M[i].x,2)+"/"+nf(M[i].nSub,0)+" ("+M[i].n+" مواسم)");
+      ST.reaches[i].K=M[i].K; ST.reaches[i].x=M[i].x; ST.reaches[i].n=Math.round(M[i].nSub);
+      any=true;
+    }
+    MwriDb.patch("apps/"+APPID+"/data/reaches", {r:JSON.stringify(ST.reaches)}).catch(function(){});
+    auditLog("اعتماد معايرة متعددة المواسم", det.join(" · "));
+    render();
+  };
+  el=$("calm-undo"); if(el) el.onclick=function(){
+    if(!ST.reachesPrev) return;
+    ST.reaches=JSON.parse(JSON.stringify(ST.reachesPrev)); ST.reachesPrev=null;
+    MwriDb.patch("apps/"+APPID+"/data/reaches", {r:JSON.stringify(ST.reaches)}).catch(function(){});
+    auditLog("رجوع عن معايرة متعددة المواسم", "");
+    render();
   };
 
   el=$("rlv-sel"); if(el) el.onchange=function(){ ST.rlv.sel=this.value; render(); };
