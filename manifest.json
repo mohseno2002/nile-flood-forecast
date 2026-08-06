@@ -1,0 +1,16 @@
+{
+  "name": "مِرقاب الفيضان — مركز قيادة الموجة",
+  "short_name": "مِرقاب الفيضان",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#faf8f2",
+  "theme_color": "#155b75",
+  "description": "لوحة التنبؤ بفيضان النيل من المنابع حتى أسوان — الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة",
+  "icons": [
+    {"src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTkyIj48cmVjdCB3aWR0aD0iMTkyIiBoZWlnaHQ9IjE5MiIgcng9IjQwIiBmaWxsPSIjMTU1Yjc1Ii8+PHRleHQgeD0iOTYiIHk9IjEyOCIgZm9udC1zaXplPSIxMDAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiNmYWY4ZjIiPuKJizwvdGV4dD48L3N2Zz4=", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any"}
+  ]
+}
