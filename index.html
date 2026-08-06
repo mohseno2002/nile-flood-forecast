@@ -189,7 +189,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.32</small>
+      <small id="buildtag">build 2.33</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -203,6 +203,7 @@ table.tb tr.hi td{background:#f2f7f4}
       </div>
       <div class="actions">
         <span id="syncbadge2" class="pill lake" style="display:none">—</span>
+        <button class="btn solid" id="btn-install" style="display:none">⤓ تثبيت</button>
         <button class="btn" id="btn-refresh">↻ تحديث</button>
         <button class="btn solid" onclick="window.print()">⎙ طباعة / PDF</button>
       </div>
@@ -683,7 +684,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.32";
+var BUILD = "2.33";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -737,7 +738,8 @@ var SECTIONS = [
   {id:"obs",      icon:"⊙", eyebrow:"القياس والثقة",         title:"القياسات الميدانية وتصحيح الانحياز"},
   {id:"alerts",   icon:"⚑", eyebrow:"الإنذار والاستجابة",    title:"إنذارات قابلة للتتبّع"},
   {id:"skill",    icon:"◷", eyebrow:"الرقابة الذاتية",       title:"سجل أداء التنبؤ"},
-  {id:"sources",  icon:"❐", eyebrow:"الشفافية",             title:"المصادر والمنهجية والحدود"}
+  {id:"sources",  icon:"❐", eyebrow:"الشفافية",             title:"المصادر والمنهجية والحدود"},
+  {id:"install",  icon:"⤓", eyebrow:"التثبيت",              title:"تثبيت التطبيق وتشخيصه"}
 ];
 
 var PAST = 45, FUT = 30, NMEM = 50;
@@ -756,6 +758,7 @@ var ST = {
   obs:{}, alerts:{}, log:{},
   user:"", audit:{}, reachesPrev:null,
   sar:{ data:{}, loading:null, credSrc:null, sel:"shendi" },
+  pwa:{ prompt:null, evtFired:false, installed:false, diag:null, running:false },
   stamp:null
 };
 
@@ -1512,6 +1515,140 @@ function sarChange(aoiId){
            from:D.main[0].t, to:D.main[D.main.length-1].t,
            kmNow:D.main[D.main.length-1].f*D.area, kmNowAlt:D.alt[D.alt.length-1].f*D.area,
            kmFirst:D.main[0].f*D.area };
+}
+
+/* =====================================================================
+   تشخيص التثبيت (PWA) — يفحص كل شرط داخل الجهاز نفسه ويعرض النتيجة
+   الغرض: لقطة شاشة واحدة تكفى لمعرفة السبب دون console
+   ===================================================================== */
+function pwaMode(){
+  try {
+    if(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) return "مثبَّت (standalone)";
+    if(window.navigator && window.navigator.standalone) return "مثبَّت (iOS)";
+  } catch(e){}
+  return "فى المتصفح";
+}
+function isIOS(){
+  try { return /iPad|iPhone|iPod/.test(window.navigator.userAgent||""); } catch(e){ return false; }
+}
+
+function pwaDiag(){
+  ST.pwa.running = true;
+  var out = { at:Date.now(), items:[] };
+  function add(k, ok, v, hint){ out.items.push({ k:k, ok:ok, v:String(v), hint:hint||"" }); }
+
+  var loc = window.location || { protocol:"—", origin:"—", pathname:"—", hostname:"" };
+  add("البروتوكول", loc.protocol === "https:", loc.protocol, "التثبيت يتطلب HTTPS");
+  add("المصدر والمسار", true, (loc.origin||"—") + (loc.pathname||""));
+  add("وضع التشغيل", true, pwaMode());
+  add("حدث التثبيت beforeinstallprompt", ST.pwa.evtFired,
+      ST.pwa.evtFired ? "أُطلق — الجهاز يعتبر التطبيق قابلاً للتثبيت" : "لم يُطلق",
+      ST.pwa.evtFired ? "" : (isIOS() ? "سفارى لا يُطلقه أصلاً — استخدم مشاركة ← إضافة للشاشة الرئيسية"
+        : "معناه أن أحد الشروط أدناه ساقط، أو أن التطبيق مثبَّت بالفعل"));
+
+  function step(){
+    /* ١) عامل الخدمة */
+    var swP;
+    if(!("serviceWorker" in window.navigator)){
+      add("عامل الخدمة", false, "غير مدعوم فى هذا المتصفح");
+      swP = Promise.resolve();
+    } else {
+      swP = window.navigator.serviceWorker.getRegistrations().then(function(regs){
+        if(!regs || !regs.length){ add("تسجيل عامل الخدمة", false, "لا تسجيل", "sw.js لم يُرفع أو مساره خاطئ"); return; }
+        var r = regs[0];
+        var state = r.active ? "نشط" : (r.installing ? "قيد التثبيت" : (r.waiting ? "منتظر" : "غير معروف"));
+        add("تسجيل عامل الخدمة", !!r.active, state + " · النطاق " + r.scope);
+        add("يتحكم فى الصفحة", !!window.navigator.serviceWorker.controller,
+            window.navigator.serviceWorker.controller ? "نعم" : "لا",
+            window.navigator.serviceWorker.controller ? "" : "أعد تحميل الصفحة مرة واحدة");
+      }).catch(function(e){ add("تسجيل عامل الخدمة", false, e.message); });
+    }
+
+    /* ٢) ملف البيان والأيقونات */
+    return swP.then(function(){
+      return fetch("manifest.json", { cache:"no-store" }).then(function(r){
+        add("ملف manifest.json", r.ok, "HTTP " + r.status,
+            r.ok ? "" : "الملف غير مرفوع أو فى مجلد فرعى");
+        if(!r.ok) return null;
+        return r.json();
+      }).catch(function(e){ add("ملف manifest.json", false, e.message); return null; });
+    }).then(function(mf){
+      if(!mf) return null;
+      add("اسم التطبيق", !!(mf.name && mf.short_name), (mf.short_name||"—"));
+      add("نمط العرض", mf.display==="standalone"||mf.display==="fullscreen", mf.display||"—",
+          "يجب أن يكون standalone");
+      add("رابط البدء", !!mf.start_url, mf.start_url||"—");
+      var ic = mf.icons || [];
+      var has192 = false, has512 = false, i;
+      for(i=0;i<ic.length;i++){
+        if(String(ic[i].type)!=="image/png") continue;
+        if(String(ic[i].sizes).indexOf("192")>-1) has192=true;
+        if(String(ic[i].sizes).indexOf("512")>-1) has512=true;
+      }
+      add("أيقونة PNG ١٩٢", has192, has192?"معلنة":"غير معلنة");
+      add("أيقونة PNG ٥١٢", has512, has512?"معلنة":"غير معلنة", "شرط إلزامى للتثبيت");
+      /* تحقق فعلى من وصول كل ملف أيقونة */
+      var chain = Promise.resolve();
+      ic.forEach(function(icon){
+        chain = chain.then(function(){
+          return fetch(icon.src, { cache:"no-store" }).then(function(r){
+            var ct = r.headers && r.headers.get ? (r.headers.get("content-type")||"") : "";
+            var okType = ct.indexOf("image/png")>-1;
+            add("ملف " + icon.src, r.ok && okType,
+                "HTTP " + r.status + (ct? (" · " + ct) : ""),
+                r.ok ? (okType?"":"نوع المحتوى ليس image/png") : "الملف غير مرفوع");
+          }).catch(function(e){ add("ملف " + icon.src, false, e.message, "الملف غير مرفوع"); });
+        });
+      });
+      return chain;
+    }).then(function(){
+      ST.pwa.diag = out;
+      ST.pwa.running = false;
+      render();
+    }).catch(function(e){
+      add("تعذّر إكمال الفحص", false, e.message);
+      ST.pwa.diag = out; ST.pwa.running = false; render();
+    });
+  }
+  render();
+  return step();
+}
+
+/* إعادة ضبط كاملة: إلغاء عامل الخدمة ومسح الكاش — يحلّ النسخة القديمة العالقة */
+function pwaHardReset(){
+  var jobs = [];
+  try {
+    if("serviceWorker" in window.navigator){
+      jobs.push(window.navigator.serviceWorker.getRegistrations().then(function(regs){
+        return Promise.all((regs||[]).map(function(r){ return r.unregister(); }));
+      }));
+    }
+  } catch(e){}
+  try {
+    if(window.caches && window.caches.keys){
+      jobs.push(window.caches.keys().then(function(ks){
+        return Promise.all(ks.map(function(k){ return window.caches.delete(k); }));
+      }));
+    }
+  } catch(e){}
+  return Promise.all(jobs).then(function(){ window.location.reload(); })
+    .catch(function(e){ netErr("تعذّرت إعادة الضبط", e); });
+}
+
+function pwaInstall(){
+  var p = ST.pwa.prompt;
+  if(!p){
+    netErr("التثبيت غير متاح الآن", new Error(
+      isIOS() ? "على iOS: زر المشاركة ثم «إضافة إلى الشاشة الرئيسية»"
+              : "المتصفح لم يُطلق حدث التثبيت — شغّل الفحص أدناه لمعرفة الشرط الساقط"));
+    return;
+  }
+  p.prompt();
+  p.userChoice.then(function(c){
+    if(c && c.outcome === "accepted"){ ST.pwa.installed = true; }
+    ST.pwa.prompt = null;
+    render();
+  }).catch(function(){});
 }
 
 /* ---------------------------------------------------------------
@@ -3024,6 +3161,68 @@ function secRain(){
   return s;
 }
 
+/* ---- التثبيت والتشخيص ---- */
+function secInstall(){
+  var D=ST.pwa.diag;
+  var canInstall = !!ST.pwa.prompt;
+  var mode = pwaMode();
+
+  var head='<div class="grid g3">'
+    + kpi("⤓", canInstall?"green":"sand", "حالة التثبيت", canInstall?"متاح":"غير متاح","",
+        canInstall?"اضغط الزر أدناه":(mode!=="فى المتصفح"?"التطبيق مثبَّت بالفعل":"شغّل الفحص لمعرفة السبب"))
+    + kpi("◱","", "وضع التشغيل الحالي", esc(mode),"", "standalone = مثبَّت")
+    + kpi("№","", "الإصدار", BUILD,"", "الكاش: nile-flood-forecast")
+    + '</div>';
+
+  var actions='<div class="actions">'
+    + '<button class="btn solid" id="pwa-install">⤓ تثبيت التطبيق</button>'
+    + '<button class="btn" id="pwa-diag"'+(ST.pwa.running?" disabled":"")+'>'
+    + (ST.pwa.running?"جارٍ الفحص…":"⚙ شغّل فحص التثبيت")+'</button>'
+    + '<button class="btn" id="pwa-reset">↺ إعادة ضبط ومسح الكاش</button>'
+    + '</div>';
+
+  var s2 = head + panel("التثبيت","زر التثبيت يعمل فقط إذا اعتبر المتصفح التطبيق قابلاً للتثبيت", actions,
+    isIOS()
+      ? '<b>على آيفون/آيباد:</b> سفارى لا يعرض زر تثبيت إطلاقاً — اضغط زر <b>المشاركة</b> ثم <b>«إضافة إلى الشاشة الرئيسية»</b>. هذا سلوك آبل لا عيب فى التطبيق.'
+      : '<b>على أندرويد/كروم:</b> لو ظهر «إنشاء اختصار» بدل «تثبيت التطبيق»، فمعناه أن شرطاً من شروط التثبيت ساقط — شغّل الفحص وسيحدد أيّها بالضبط. '
+        + 'وزر <b>إعادة الضبط</b> يلغى عامل الخدمة القديم ويمسح الكاش، ويحلّ حالة تعلّق نسخة قديمة بعد تحديث الملفات.');
+
+  if(!D) return s2 + panel("لم يُشغَّل الفحص بعد","اضغط «شغّل فحص التثبيت»",
+    '<p class="note">الفحص يتم داخل جهازك: يتحقق من البروتوكول، وعامل الخدمة، ووصول ملف البيان، '
+    + 'ووصول كل ملف أيقونة فعلياً بنوع محتواه — ويعرض النتيجة هنا حتى تكفى لقطة شاشة واحدة للتشخيص.</p>');
+
+  var rows="", bad=0, i;
+  for(i=0;i<D.items.length;i++){
+    var it=D.items[i];
+    if(!it.ok) bad++;
+    rows+='<tr><td><b>'+esc(it.k)+'</b></td>'
+      +'<td>'+(it.ok?'<span class="pill green">سليم</span>':'<span class="pill danger">ساقط</span>')+'</td>'
+      +'<td style="font-size:10.5px;word-break:break-all">'+esc(it.v)+'</td>'
+      +'<td style="font-size:10.5px;color:var(--muted)">'+esc(it.hint)+'</td></tr>';
+  }
+  s2 += '<div class="banner '+(bad?"danger":"ok")+'"><span>'+(bad?"⚠":"✓")+'</span><div>'
+     + (bad? ('<b>'+nf(bad,0)+' شرطاً ساقطاً</b> — الصفوف الحمراء أدناه هى سبب ظهور «إنشاء اختصار» بدل «تثبيت التطبيق».')
+           : '<b>كل الشروط سليمة.</b> إن لم يظهر خيار التثبيت بعد، أغلق المتصفح وافتح الرابط من جديد — كروم يعيد التقييم عند التحميل التالى.')
+     + '</div></div>';
+
+  s2 += panel("نتيجة الفحص","كل شرط وحالته الفعلية على هذا الجهاز",
+    '<div class="tb-wrap"><table class="tb"><thead><tr><th>الشرط</th><th>الحالة</th>'
+    + '<th>القيمة المقروءة</th><th>الملاحظة</th></tr></thead><tbody>'+rows+'</tbody></table></div>',
+    'وقت الفحص: ' + esc(new Date(D.at).toISOString().slice(0,16).replace("T"," ")) + ' UTC');
+
+  s2 += panel("الملفات المطلوبة فى جذر المستودع","ستة ملفات — أى نقص يمنع التثبيت",
+    '<div class="tb-wrap"><table class="tb"><tbody>'
+    + '<tr><td>index.html</td><td>التطبيق</td></tr>'
+    + '<tr><td>sw.js</td><td>عامل الخدمة — بدونه لا تثبيت</td></tr>'
+    + '<tr><td>manifest.json</td><td>ملف البيان</td></tr>'
+    + '<tr><td>icon-192.png</td><td>أيقونة ١٩٢×١٩٢</td></tr>'
+    + '<tr><td>icon-512.png</td><td>أيقونة ٥١٢×٥١٢ — شرط إلزامى</td></tr>'
+    + '<tr><td>icon-maskable-512.png</td><td>أيقونة أندرويد القابلة للقصّ</td></tr>'
+    + '</tbody></table></div>',
+    'كلها فى <b>جذر المستودع</b> بجوار بعضها. لو دخلت الأيقونات فى مجلد فرعى تكسر المسارات فى ملف البيان ويعود «إنشاء اختصار».');
+  return s2;
+}
+
 /* ---- مرصد الأقمار — Sentinel-1 ---- */
 function secSar(){
   var sel=ST.sar.sel, A=sarAoi(sel), D=ST.sar.data[sel];
@@ -3582,6 +3781,7 @@ function render(){
   else if(ST.sec==="alerts")   h=secAlerts();
   else if(ST.sec==="skill")    h=secSkill();
   else if(ST.sec==="sources")  h=secSources();
+  else if(ST.sec==="install")  h=secInstall();
   c.innerHTML=h;
   bindControls();
 }
@@ -3635,6 +3835,13 @@ function bindControls(){
 
   el=$("fday"); if(el) el.oninput=function(){ ST.fingerDay=+this.value; render(); };
   el=$("fday-now"); if(el) el.onclick=function(){ ST.fingerDay=nowIdx(); render(); };
+
+  el=$("pwa-install"); if(el) el.onclick=function(){ pwaInstall(); };
+  el=$("pwa-diag");    if(el) el.onclick=function(){ pwaDiag(); };
+  el=$("pwa-reset");   if(el) el.onclick=function(){
+    if(window.confirm("سيُلغى عامل الخدمة ويُمسح الكاش ثم تُعاد الصفحة. البيانات المحفوظة فى القاعدة لا تتأثر.\n\nمتابعة؟"))
+      pwaHardReset();
+  };
 
   el=$("sar-aoi"); if(el) el.onchange=function(){ ST.sar.sel=this.value; render(); };
   el=$("sar-load"); if(el) el.onclick=function(){ sarLoad(ST.sar.sel); };
@@ -3851,12 +4058,27 @@ function boot(){
   });
 }
 
+var bi=$("btn-install");
+if(bi) bi.onclick=function(){ pwaInstall(); };
+
 var br=$("btn-refresh");
 if(br) br.onclick=function(){
   ST.q=null; ST.mem=null; ST.rain=null; ST.clim=null; ST.calib=null;
   if(!ST.thrManual){ ST.thr=null; ST.thrClim=null; }
   render(); boot();
 };
+
+/* التقاط حدث قابلية التثبيت — يجب أن يُسجَّل مبكراً قبل إطلاق المتصفح له */
+window.addEventListener("beforeinstallprompt", function(e){
+  e.preventDefault();
+  ST.pwa.prompt = e;
+  ST.pwa.evtFired = true;
+  var b=$("btn-install"); if(b) b.style.display="inline-flex";
+});
+window.addEventListener("appinstalled", function(){
+  ST.pwa.installed = true; ST.pwa.prompt = null;
+  var b=$("btn-install"); if(b) b.style.display="none";
+});
 
 if("serviceWorker" in navigator){
   window.addEventListener("load", function(){
