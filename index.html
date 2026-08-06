@@ -189,7 +189,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.33</small>
+      <small id="buildtag">build 2.35</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -684,7 +684,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.33";
+var BUILD = "2.35";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -739,6 +739,8 @@ var SECTIONS = [
   {id:"alerts",   icon:"⚑", eyebrow:"الإنذار والاستجابة",    title:"إنذارات قابلة للتتبّع"},
   {id:"skill",    icon:"◷", eyebrow:"الرقابة الذاتية",       title:"سجل أداء التنبؤ"},
   {id:"sources",  icon:"❐", eyebrow:"الشفافية",             title:"المصادر والمنهجية والحدود"},
+  {id:"alti",     icon:"≋", eyebrow:"الألتيمترى",           title:"مناسيب البحيرات من المدارات"},
+  {id:"cert",     icon:"✦", eyebrow:"النشرة",               title:"شهادة الرصد المستقل"},
   {id:"install",  icon:"⤓", eyebrow:"التثبيت",              title:"تثبيت التطبيق وتشخيصه"}
 ];
 
@@ -758,6 +760,9 @@ var ST = {
   obs:{}, alerts:{}, log:{},
   user:"", audit:{}, reachesPrev:null,
   sar:{ data:{}, loading:null, credSrc:null, sel:"shendi" },
+  alti:{ data:{}, loading:false, sel:"gerd", keyOk:null },
+  calH:{ year:2020, H:null, res:null, loading:false },
+  cert:{ url:null, busy:false },
   pwa:{ prompt:null, evtFired:false, installed:false, diag:null, running:false },
   stamp:null
 };
@@ -2275,7 +2280,7 @@ function runRouting(){
 }
 
 /* =====================================================================
-   تتبّع الأعضاء الـ٥١
+   تتبّع أعضاء المروحة (٥٠ مضطرباً + عضو تشغيلى)
    ===================================================================== */
 function runEnsemble(){
   if(!ST.mem || !ST.mem.eldiem || !ST.q) return null;
@@ -2349,17 +2354,9 @@ function exceedProbEns(ens, j, L){
 /* =====================================================================
    المعايرة الآلية — بحث شبكى على الفترة الماضية فقط
    ===================================================================== */
-function calibrateReach(idx){
-  if(!ST.q) return null;
-  var k=nowIdx(), a=Math.max(2,k-42), b=k;
-  var t=ST.q.eldiem.t, inflow, obs;
-  /* المرجع لكل مقطع = محطة مصبّه، والمدخل نفس ما تستخدمه routeSystem بالضبط */
-  if(idx===0){ inflow=ST.q.eldiem.q;   obs=ST.q.bnkhart.q; }
-  else if(idx===1){ inflow=ST.q.khartoum.q; obs=ST.q.shendi.q; }
-  else if(idx===2){ inflow=addS(ST.q.shendi.q, ST.q.atbara.q, 1); obs=ST.q.merowe.q; }
-  else { inflow=ST.q.merowe.q; obs=ST.q.halfa.q; }
-  if(!inflow||!obs) return null;
-
+/* البحث الشبكى المشترك على K/x/n بمعيار KGE — تستدعيه المعايرة الجارية والموسمية معاً
+   (استُخلص من calibrateReach حتى لا تتكرر شبكة القيم فى موضعين وتتباعد مستقبلاً) */
+function muskGrid(inflow, obs, a, b){
   var Ks=[1,1.5,2,2.5,3,3.5,4,5,6,7,8,9,10];
   var Xs=[0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40];
   var Ns=[1,2,3,4,5,6,8];
@@ -2372,6 +2369,20 @@ function calibrateReach(idx){
     if(!mt||mt.KGE===null||isNaN(mt.KGE)) continue;
     if(!best || mt.KGE>best.m.KGE) best={K:K,x:x,n:n,m:mt,out:r.out};
   }
+  return best;
+}
+function calibrateReach(idx){
+  if(!ST.q) return null;
+  var k=nowIdx(), a=Math.max(2,k-42), b=k;
+  var t=ST.q.eldiem.t, inflow, obs;
+  /* المرجع لكل مقطع = محطة مصبّه، والمدخل نفس ما تستخدمه routeSystem بالضبط */
+  if(idx===0){ inflow=ST.q.eldiem.q;   obs=ST.q.bnkhart.q; }
+  else if(idx===1){ inflow=ST.q.khartoum.q; obs=ST.q.shendi.q; }
+  else if(idx===2){ inflow=addS(ST.q.shendi.q, ST.q.atbara.q, 1); obs=ST.q.merowe.q; }
+  else { inflow=ST.q.merowe.q; obs=ST.q.halfa.q; }
+  if(!inflow||!obs) return null;
+
+  var best=muskGrid(inflow, obs, a, b);
   /* قابلية التعريف: K وx لا يُعرَّفان من ساق صاعدة ملساء بلا ذروة */
   var wv=[], wi;
   for(wi=a; wi<=b; wi++) if(inflow[wi]!==null&&!isNaN(inflow[wi])) wv.push(inflow[wi]);
@@ -3035,6 +3046,8 @@ function secRouting(){
     cal,
     '<b>المرجع المستخدم للمعايرة هو GloFAS نفسه</b> عند المحطة المصبّية لكل مقطع، فهذه معايرة اتساق داخلى للنموذج لا مطابقة للواقع الميدانى. للمعايرة الحقيقية أدخل قياساتك من قسم «القياس والثقة». لا تُغيَّر المعاملات إلا بضغطك على زر الاعتماد.');
 
+  s+=histCalPanel();
+
   s+=panel("تدرّج الموجة على المجرى","الهيدروجراف عند كل عقدة",
     '<div class="chart-box">'+plot({
       t:rt.t, nowIdx:k, yTitle:"التصرف (م³/ث)",
@@ -3085,7 +3098,7 @@ function secRain(){
     +'الأمطار كلها — الماضية والقادمة — مخرجات نموذج Open-Meteo (ECMWF/GFS): الماضية <b>تحليل/إعادة تحليل</b> '
     +'وليست قياساً مطرياً أرضياً ولا رصداً قمرياً، والقادمة تنبؤ. '
     +'الشبكة ترفع دقة التمثيل المكانى ولا تُدخل مصدر رصد جديداً. '
-    +'<b>لم يُربط بعد أى قمر صناعى بهذا التطبيق</b> — لا GPM ولا Sentinel ولا SWOT.</div></div>';
+    +'<b>طبقة الأمطار هذه لا يغذّيها أى قمر صناعى</b> — لا GPM ولا SWOT؛ القمر الوحيد المربوط بالتطبيق هو Sentinel-1 (قسم «مرصد الأقمار») ولا علاقة له بالمطر.</div></div>';
 
   if(ri && ri.past7>0 && ri.next7 > ri.past7*1.4){
     s+='<div class="banner warn"><span>⚠</span><div><b>تصاعد مطرى متوقع.</b> '
@@ -3689,6 +3702,7 @@ function secSources(){
   var rows='<tr><td><b>تصرفات الأنهار</b></td><td>GloFAS v4 عبر Open-Meteo Flood API</td>'
     +'<td>يومى · '+PAST+' ماضية + '+FUT+' تنبؤ · '+NMEM+' عضواً · أرشيف من ٢٠٠٦</td><td>حرّ بلا مفتاح</td></tr>'
     +'<tr><td><b>الأمطار</b></td><td>Open-Meteo Forecast</td><td>يومى · ٢١ ماضية + ١٤ تنبؤ</td><td>حرّ بلا مفتاح</td></tr>'
+    +'<tr><td><b>مناسيب البحيرات</b></td><td>DAHITI عبر api/v2 (DGFI-TUM)</td><td>ألتيمترى متعدد المهام · ~١٠–٢٧ يوماً للدورة</td><td>مفتاح مجانى بالتسجيل</td></tr>'
     +'<tr><td><b>الهيدروليكا</b></td><td>MWRIHyd v'+(window.MWRIHyd?MWRIHyd.version:"—")+'</td>'
     +'<td>ماسكينجم + الاتزان المائى</td><td>نواة موحّدة متحقَّق منها</td></tr>'
     +'<tr><td><b>المسطحات المائية</b></td><td>Sentinel-1 GRD عبر Copernicus Statistical API</td>'
@@ -3732,10 +3746,10 @@ function secSources(){
 
   s+=panel("الأقمار الصناعية — الوضع الصريح","ما هو رصد وما هو نمذجة",
     '<div class="banner info"><span>ℹ</span><div>'
-    +'<b>المربوط فعلياً: Sentinel-1 وحده</b> (رادار SAR عبر Copernicus Data Space) فى قسم «مرصد الأقمار» — '
+    +'<b>المربوط فعلياً: Sentinel-1 والألتيمترى DAHITI</b> — الرادار فى قسم «مرصد الأقمار»، والمناسيب فى قسم «الألتيمترى» (بمفتاح مجانى) — '
     +'وهو رصد حقيقى يقيس المسطح المائى على أربعة نطاقات. '
     +'<b>وما ليس رصداً:</b> شبكة الـ'+RAIN_CELLS.length+' خلية المطرية مخرج نموذج جوى لا قمر صناعى، وتصرفات المحطات مخرج نموذج GloFAS لا قياس. '
-    +'<b>وغير المربوط:</b> GPM–IMERG (يحتاج توثيق NASA Earthdata بلا CORS، أى خدمة وسيطة) وSentinel-2 وSWOT وSMAP والألتيمترى.'
+    +'<b>وغير المربوط:</b> GPM–IMERG (يحتاج توثيق NASA Earthdata بلا CORS، أى خدمة وسيطة) وSentinel-2 وSWOT وSMAP.'
     +'</div></div>');
 
   s+=panel("ما لا يفعله التطبيق","حدود صريحة",
@@ -3765,6 +3779,424 @@ function secSources(){
 /* ---------------------------------------------------------------
    التوجيه والربط
    --------------------------------------------------------------- */
+/* =====================================================================
+   المعايرة على موسم تاريخى كامل — يحلّ ضعف تعريف K على الساق الملساء
+   المرجع: إعادة تحليل GloFAS لنفس المحطات (اتساق داخلى، لا مطابقة ميدانية)
+   ===================================================================== */
+var CALH_YEARS=[2019,2020,2021,2022,2023,2024,2025];
+function loadSeason(year){
+  var ids=["eldiem","bnkhart","khartoum","shendi","atbara","merowe","halfa"];
+  var lats=[],lons=[],i;
+  for(i=0;i<ids.length;i++){ var st=stn(ids[i]); lats.push(st.lat); lons.push(st.lon); }
+  var url=FLOOD_API+"?latitude="+lats.join(",")+"&longitude="+lons.join(",")
+    +"&daily=river_discharge&start_date="+year+"-05-01&end_date="+year+"-12-31";
+  ST.calH.loading=true; ST.calH.year=year; ST.calH.res=null; render();
+  return getJSON(url,"تعذّر جلب أرشيف موسم "+year).then(function(arr){
+    var list=(arr&&arr.length!==undefined)?arr:[arr], H={};
+    for(i=0;i<ids.length;i++){
+      var d=list[i];
+      if(d&&d.daily) H[ids[i]]={t:d.daily.time, q:d.daily.river_discharge};
+    }
+    ST.calH.H=H;
+    ST.calH.res=calibrateAllSeason(H);
+    ST.calH.loading=false; render();
+    return ST.calH.res;
+  }).catch(function(){ ST.calH.loading=false; render(); return null; });
+}
+function calibrateReachSeason(idx, H){
+  var inflow, obs;
+  if(idx===0){ if(!H.eldiem||!H.bnkhart) return null; inflow=H.eldiem.q; obs=H.bnkhart.q; }
+  else if(idx===1){ if(!H.khartoum||!H.shendi) return null; inflow=H.khartoum.q; obs=H.shendi.q; }
+  else if(idx===2){ if(!H.shendi||!H.atbara||!H.merowe) return null;
+    inflow=addS(H.shendi.q, H.atbara.q, 1); obs=H.merowe.q; }
+  else { if(!H.merowe||!H.halfa) return null; inflow=H.merowe.q; obs=H.halfa.q; }
+  var t=H.eldiem.t, a=2, b=t.length-1;
+  var best=muskGrid(inflow, obs, a, b);
+  var wv=[],wi;
+  for(wi=a;wi<=b;wi++) if(inflow[wi]!==null&&!isNaN(inflow[wi])) wv.push(inflow[wi]);
+  if(wv.length<60) return null;
+  var wmin=Math.min.apply(null,wv), wmax=Math.max.apply(null,wv), wmean=FIT.mean(wv);
+  var ident=wmean>0?(wmax-wmin)/wmean:0;
+  /* ذروة داخلية حقيقية: القمة ليست على أى من طرفى النافذة */
+  var pk=peakOf(inflow,t), hasPeak=(pk.i>a+5 && pk.i<b-5);
+  var R=ST.reaches[idx];
+  var cur=routeCascade(inflow,R.K,R.x,R.n,1);
+  var curM=FIT.metrics(obs,cur.out,a,b);
+  var pe=best? FIT.peakErr(obs,best.out,t,a,b):null;
+  return { idx:idx, cur:{K:R.K,x:R.x,n:R.n,m:curM}, best:best, peak:pe,
+           ident:ident, hasPeak:hasPeak, reliable:(ident>=0.5&&hasPeak&&best&&best.m.KGE>=0.75),
+           window:{from:t[a], to:t[b], n:b-a+1} };
+}
+function calibrateAllSeason(H){
+  var out=[],i;
+  for(i=0;i<ST.reaches.length;i++) out.push(calibrateReachSeason(i,H));
+  return out;
+}
+function histCalPanel(){
+  var yopts="",yi;
+  for(yi=0;yi<CALH_YEARS.length;yi++)
+    yopts+='<option value="'+CALH_YEARS[yi]+'"'+(ST.calH.year===CALH_YEARS[yi]?" selected":"")+'>موسم '+CALH_YEARS[yi]+'</option>';
+  var inner='<div class="ctrl"><label>الموسم (مايو ← ديسمبر):</label>'
+    +'<select id="calh-year">'+yopts+'</select>'
+    +'<button class="btn solid" id="calh-run"'+(ST.calH.loading?" disabled":"")+'>'
+    +(ST.calH.loading?"⏳ جارٍ الجلب والمعايرة…":"⚙ اجلب الموسم وعايِر عليه")+'</button>'
+    +(ST.calH.res?'<button class="btn" id="calh-apply">✓ اعتماد الموثوق فقط</button>':"")
+    +(ST.reachesPrev?'<button class="btn" id="cal-undo2">↺ رجوع للمعاملات السابقة</button>':"")+'</div>';
+  if(ST.calH.res){
+    var rows="",anyOk=false;
+    ST.calH.res.forEach(function(c,i){
+      if(!c){ rows+='<tr><td><b>'+esc(ST.reaches[i].nm)+'</b></td><td colspan="8">بيانات الموسم غير كافية</td></tr>'; return; }
+      if(c.reliable) anyOk=true;
+      var g=FIT.grade(c.best?c.best.m.KGE:null);
+      var impr=(c.best&&c.cur.m)?(c.best.m.KGE-c.cur.m.KGE):null;
+      rows+='<tr><td><b>'+esc(ST.reaches[i].nm)+'</b><div style="font-size:9.5px;color:var(--muted)">'
+        +esc(c.window.from)+' ← '+esc(c.window.to)+' ('+c.window.n+' يوماً)</div></td>'
+        +'<td class="num">'+c.cur.K+' / '+c.cur.x+' / '+c.cur.n+'</td>'
+        +'<td class="num">'+(c.cur.m?nf(c.cur.m.KGE,3):"—")+'</td>'
+        +'<td class="num"><b>'+(c.best?(c.best.K+" / "+c.best.x+" / "+c.best.n):"—")+'</b></td>'
+        +'<td class="num">'+(c.best?nf(c.best.m.KGE,3):"—")+'</td>'
+        +'<td class="num">'+(c.best?nf(c.best.m.PBIAS,1)+"%":"—")+'</td>'
+        +'<td class="num">'+(c.peak?(c.peak.dtDays+" ي / "+nf(c.peak.dQpct,1)+"%"):"—")+'</td>'
+        +'<td><span class="pill '+g.cls+'">'+g.g+'</span>'+(impr!==null?'<div style="font-size:9px;color:var(--muted)">'+(impr>=0?"+":"")+nf(impr,3)+'</div>':"")+'</td>'
+        +'<td><span class="pill '+(c.reliable?"green":"danger")+'">'+(c.reliable?"موثوقة":"غير موثوقة")+'</span>'
+        +'<div style="font-size:9px;color:var(--muted)">مدى/متوسط '+nf(c.ident,2)+(c.hasPeak?" · ذروة داخلية":" · بلا ذروة داخلية")+'</div></td></tr>';
+    });
+    inner+='<div class="tb-wrap"><table class="tb"><thead><tr><th>المقطع</th><th>الحالى K/x/n</th><th>KGE الحالى</th>'
+      +'<th>المقترح K/x/n</th><th>KGE</th><th>PBIAS</th><th>خطأ الذروة</th><th>التقييم</th><th>الموثوقية</th></tr></thead><tbody>'
+      +rows+'</tbody></table></div>';
+    if(anyOk) inner+='<div class="banner info"><span>ℹ</span><div>نافذة الموسم تحوى ذروة كاملة (صعود ثم هبوط)، '
+      +'فمعاملا K وx قابلان للتعريف هنا — بخلاف نافذة الـ٤٢ يوماً الجارية. '
+      +'الموثوق فقط هو ما يُعرض للاعتماد، بنفس بوابة التأكيد وسجل التدقيق وإمكانية الرجوع.</div></div>';
+  }
+  return panel("المعايرة على موسم تاريخى","بحث شبكى على موسم كامل بذروة حقيقية — العلاج الجذرى لضعف التعريف",
+    inner,
+    'المرجع هو <b>إعادة تحليل GloFAS</b> لنفس المحطات (اتساق داخلى للنموذج لا مطابقة ميدانية). '
+    +'زمن العبور الفيزيائى المتوقع من الديم لحلفا ~١٢–١٣ يوماً؛ إن اقترحت المعايرة مجموع K بعيداً عن ذلك فراجع قبل الاعتماد.');
+}
+
+/* =====================================================================
+   الألتيمترى — مناسيب البحيرات من المدارات (DAHITI / DGFI-TUM)
+   العقد: GET /api/v2/download-water-level/?api_key=..&dahiti_id=..&format=json
+   الرد: { target:{..}, data:[ {date:"YYYY-MM-DDT00:00:00", wse, wse_u, data:mission} ] }
+   CORS مفتوح لنطاق github.io (متحقَّق منه) — والمفتاح مجانى بالتسجيل فى dahiti.dgfi.tum.de
+   ===================================================================== */
+var ALTI_API="https://dahiti.dgfi.tum.de/api/v2/download-water-level/";
+var ALTI_TARGETS=[
+  { id:"gerd",   dahiti:27208, nm:"بحيرة سد النهضة", regulated:true,
+    note:"منسوب البحر (م) — منسوب الاعتماد الطبيعى المنشور 640 م",
+    miles:[{y:"ملء 2020",v:540},{y:"ملء 2021",v:575},{y:"ملء 2022",v:600},{y:"ملء 2023",v:625},{y:"اكتمال الملء 2024",v:640}] },
+  { id:"nasser", dahiti:210,   nm:"بحيرة ناصر", regulated:true,
+    note:"منسوب البحر (م) — المرجع الرسمى هو مقياس السد العالى؛ الألتيمترى تحقق مستقل",
+    miles:[] }
+];
+function altiTarget(id){ var i; for(i=0;i<ALTI_TARGETS.length;i++) if(ALTI_TARGETS[i].id===id) return ALTI_TARGETS[i]; return null; }
+function altiKey(){
+  try{ var k=localStorage.getItem("mwri_dahiti_key"); if(k) return Promise.resolve({key:k,src:"محلى"}); }catch(e){}
+  /* نمط اعتماد Copernicus نفسه: خارج جذر /mwri على sh_config — يُقرأ من MwriDb.base مباشرة */
+  return fetch(MwriDb.base+"/sh_config/dahiti_key.json").then(function(r){ return r.json(); })
+    .then(function(v){ if(!v) return null; return {key:b64decode(v), src:"القاعدة"}; })
+    .catch(function(){ return null; });
+}
+function altiLoad(sel){
+  var T=altiTarget(sel); if(!T) return Promise.resolve(null);
+  ST.alti.loading=true; render();
+  return Promise.resolve(altiKey()).then(function(K){
+    if(!K||!K.key){ ST.alti.keyOk=false; ST.alti.loading=false; render(); return null; }
+    var url=ALTI_API+"?api_key="+encodeURIComponent(K.key)+"&dahiti_id="+T.dahiti+"&format=json";
+    return fetch(url).then(function(r){
+      if(!r.ok) return r.text().then(function(tx){
+        throw new Error("HTTP "+r.status+" — "+String(tx).slice(0,160)); });
+      return r.json();
+    }).then(function(d){
+      var arr=(d&&d.data)?d.data:[], out=[],i;
+      for(i=0;i<arr.length;i++){
+        var w=arr[i];
+        /* العقد الموثَّق: date/water_level/error — مع قبول wse/datetime لو غيّرت v2 المسميات */
+        var lv=(w.water_level!==undefined)?w.water_level:w.wse;
+        var er=(w.error!==undefined)?w.error:w.wse_u;
+        var dt=(w.date!==undefined)?w.date:w.datetime;
+        if(lv!==null && lv!==undefined && !isNaN(lv) && dt)
+          out.push({t:String(dt).slice(0,10), v:+lv, u:(er!==undefined&&er!==null? +er : null)});
+      }
+      out.sort(function(p,q){ return p.t<q.t? -1:1; });
+      ST.alti.data[sel]={ series:out, target:(d&&d.target)?d.target:null, at:Date.now() };
+      ST.alti.keyOk=true; ST.alti.loading=false; render();
+      return ST.alti.data[sel];
+    });
+  }).catch(function(e){
+    ST.alti.loading=false; ST.alti.keyOk=(String(e).indexOf("403")===-1)?ST.alti.keyOk:false;
+    netErr("تعذّر جلب الألتيمترى (DAHITI)", e); render(); return null;
+  });
+}
+function altiDayNum(iso){ var p=String(iso).split("-"); return Date.UTC(+p[0],+p[1]-1,+p[2])/864e5; }
+function altiStats(sel){
+  var D=ST.alti.data[sel]; if(!D||D.series.length<2) return null;
+  var S=D.series, last=S[S.length-1], tn=altiDayNum(last.t);
+  function at(daysBack){
+    var i,best=null,bd=1e9;
+    for(i=0;i<S.length;i++){ var dd=Math.abs((tn-altiDayNum(S[i].t))-daysBack);
+      if(dd<bd){ bd=dd; best=S[i]; } }
+    return (bd<=daysBack*0.5+12)? best:null;
+  }
+  var p30=at(30), p90=at(90), p365=at(365);
+  function d(p){ return p? last.v-p.v : null; }
+  var d30=d(p30);
+  var rate=(p30&&d30!==null)? d30/((tn-altiDayNum(p30.t))||1)*30 : null;
+  var trend = rate===null? null : (rate>0.15? {nm:"صاعد — احتجاز",cls:"sand"} :
+              (rate<-0.15? {nm:"هابط — تمرير أكبر من الوارد",cls:"lake"} : {nm:"شبه مستقر",cls:"green"}));
+  return { last:last, n:S.length, from:S[0].t, d30:d30, d90:d(p90), d365:d(p365), rate:rate, trend:trend };
+}
+function secAlti(){
+  var T=altiTarget(ST.alti.sel), D=ST.alti.data[ST.alti.sel], A=altiStats(ST.alti.sel);
+  var sel='<div class="ctrl"><label>البحيرة:</label><select id="alti-sel">',i;
+  for(i=0;i<ALTI_TARGETS.length;i++)
+    sel+='<option value="'+ALTI_TARGETS[i].id+'"'+(ST.alti.sel===ALTI_TARGETS[i].id?" selected":"")+'>'+esc(ALTI_TARGETS[i].nm)+'</option>';
+  sel+='</select><button class="btn solid" id="alti-load"'+(ST.alti.loading?" disabled":"")+'>'
+    +(ST.alti.loading?"⏳ جارٍ الجلب…":"⤓ اجلب السلسلة")+'</button></div>';
+  var s=panel("الألتيمترى متعدد المهام","أول رصد مباشر لسلوك الخزانات المنظَّمة", sel,
+    'المصدر: <b>DAHITI</b> (DGFI-TUM) — منسوب سطح الماء من الأقمار الرادارية '
+    +'(Sentinel-3/6 وJason وأسلافها) مدموجاً بمرشّح كالمان. '
+    +'هذا رصد مستقل تماماً عن GloFAS، وهو ما لا يراه النموذج أصلاً: <b>تشغيل الخزانات</b>.');
+  if(ST.alti.keyOk===false)
+    s+=panel("مفتاح DAHITI مطلوب","تسجيل مجانى ثم توليد API key من صفحة الحساب",
+      '<div class="ctrl"><label>API key:</label><input type="password" id="alti-key" style="min-width:220px" placeholder="مفتاح DAHITI">'
+      +'<button class="btn solid" id="alti-key-save">حفظ محلياً</button>'
+      +'<label><input type="checkbox" id="alti-key-db"> مشاركته عبر أجهزتك (يُحفظ فى القاعدة المفتوحة — مُرمَّزاً لا مشفَّراً)</label></div>',
+      'سجّل فى dahiti.dgfi.tum.de (مجانى) ثم انسخ المفتاح هنا. '
+      +'<b>تنبيه:</b> خيار المشاركة يضع المفتاح فى قاعدة مفتوحة بلا مصادقة — نفس تنبيه مفتاح Copernicus فى قسم المصادر.');
+  if(D&&D.series.length){
+    var S=D.series, t=[], v=[], step=Math.max(1,Math.floor(S.length/240));
+    for(i=0;i<S.length;i+=step){ t.push(S[i].t); v.push(S[i].v); }
+    if((S.length-1)%step!==0){ t.push(S[S.length-1].t); v.push(S[S.length-1].v); }
+    var series=[{v:v,color:"#155b75",wd:2.2}], leg='<span><i style="background:#155b75"></i>منسوب الألتيمترى</span>';
+    var mcolors=["#c58a2f","#b46f4b","#7fa86b","#5fa3c4","#b8503f"];
+    if(T.miles.length){
+      for(i=0;i<T.miles.length;i++){
+        var cv=[],j; for(j=0;j<t.length;j++) cv.push(T.miles[i].v);
+        series.push({v:cv,color:mcolors[i%mcolors.length],wd:1,dash:"4 4"});
+        leg+='<span><i style="background:'+mcolors[i%mcolors.length]+'"></i>'+esc(T.miles[i].y)+' ('+T.miles[i].v+' م)</span>';
+      }
+    }
+    s+=panel(esc(T.nm),"السلسلة الكاملة — "+D.series.length+" رصدة من "+esc(S[0].t),
+      '<div class="chart-box">'+plot({t:t, yTitle:"منسوب (م فوق سطح البحر)", series:series})+'</div>'
+      +'<div class="legend">'+leg+'</div>', esc(T.note));
+    if(A){
+      s+='<div class="grid g4" style="margin-top:15px">'
+        +kpi("≋","","آخر منسوب مرصود", nf(A.last.v,2),"م", A.last.t+(A.last.u!==null?" · ±"+nf(A.last.u,2)+" م":""))
+        +kpi("Δ", A.trend?A.trend.cls:"", "معدل التغيّر", A.rate!==null?((A.rate>0?"+":"")+nf(A.rate,2)):"—","م/٣٠ يوماً", A.trend?A.trend.nm:"—")
+        +kpi("◐","sand","تغيّر ٩٠ يوماً", A.d90!==null?((A.d90>0?"+":"")+nf(A.d90,2)):"—","م","و"+(A.d365!==null?((A.d365>0?"+":"")+nf(A.d365,2)):"—")+" م فى سنة")
+        +kpi("⊙","lake","عدد الأرصاد", A.n,"رصدة","منذ "+esc(A.from))
+        +'</div>';
+      s+=stampPill("obs")+' <span style="font-size:11px;color:var(--muted)">كل الأرقام أعلاه رصد ألتيمترى مباشر — لا نمذجة ولا استيفاء لدينا</span>';
+      if(T.id==="gerd")
+        s+='<div class="banner info" style="margin-top:12px"><span>ℹ</span><div>'
+          +'<b>قراءة المؤشر:</b> الهبوط خارج موسم الفيضان يعنى تمريراً (توربينات/مفيض) أكبر من الوارد، '
+          +'والصعود يعنى احتجازاً. <b>تحويل المنسوب إلى مخزون يحتاج منحنى سعة رسمياً</b> غير متاح لنا — '
+          +'فلا يعرض التطبيق أرقام مليارات م³، ومناسيب الملء المرسومة مرجعية كما نُشرت. '
+          +'GloFAS لا يمثّل هذا الخزان — فهذه الطبقة تسدّ عمداً أكبر نقطة عمياء فى التنبؤ.</div></div>';
+    }
+  } else if(ST.alti.keyOk!==false){
+    s+=panel("لا بيانات بعد","اضغط «اجلب السلسلة»",
+      '<p class="note">أول جلبة تعرض السلسلة الكاملة منذ بداية الرصد (قد تتجاوز ٤٠٠ رصدة لناصر).</p>');
+  }
+  return s;
+}
+
+/* =====================================================================
+   شهادة الرصد المستقل — نشرة PNG قابلة للمشاركة بضغطة واحدة
+   القاعدة: كل رقم يُرسم من حالة التطبيق كما هى؛ الطبقة غير المحمَّلة
+   تُكتب «غير محمَّل» ولا يُختلق لها رقم أبداً
+   ===================================================================== */
+function certLine(ctx,x0,x1,y){ ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke(); }
+function certSeries(ctx, box, t, arrs, thr){
+  /* أصغر راسم سلاسل على canvas: يكفى منحنى حلفا والعتبات */
+  var lo=Infinity, hi=-Infinity, i,j;
+  for(i=0;i<arrs.length;i++){ var a=arrs[i].v; if(!a) continue;
+    for(j=0;j<a.length;j++){ var vv=a[j]; if(vv===null||vv===undefined||isNaN(vv)) continue;
+      if(vv<lo) lo=vv; if(vv>hi) hi=vv; } }
+  if(thr){ if(thr.a<lo) lo=thr.a; if(thr.c>hi) hi=thr.c; }
+  if(!(hi>lo)){ return; }
+  var pad=(hi-lo)*0.08; lo-=pad; hi+=pad;
+  function X(k){ return box.x + (t.length<2? box.w/2 : k/(t.length-1)*box.w); }
+  function Y(v){ return box.y + box.h - (v-lo)/(hi-lo)*box.h; }
+  ctx.save();
+  ctx.strokeStyle="#d8d2c2"; ctx.lineWidth=1;
+  ctx.strokeRect(box.x, box.y, box.w, box.h);
+  if(thr){
+    var tt=[{v:thr.a,c:"#c58a2f"},{v:thr.b,c:"#b46f4b"},{v:thr.c,c:"#b8503f"}];
+    ctx.setLineDash([5,4]);
+    for(i=0;i<tt.length;i++){ ctx.strokeStyle=tt[i].c; certLine(ctx, box.x, box.x+box.w, Y(tt[i].v)); }
+    ctx.setLineDash([]);
+  }
+  for(i=0;i<arrs.length;i++){
+    var A=arrs[i]; if(!A.v) continue;
+    ctx.strokeStyle=A.c; ctx.lineWidth=A.wd||2.5;
+    if(A.dash) ctx.setLineDash(A.dash);
+    ctx.beginPath(); var started=false;
+    for(j=0;j<A.v.length;j++){ var vv=A.v[j];
+      if(vv===null||vv===undefined||isNaN(vv)){ started=false; continue; }
+      if(!started){ ctx.moveTo(X(j),Y(vv)); started=true; } else ctx.lineTo(X(j),Y(vv)); }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.fillStyle="#7a756a"; ctx.font="20px Cairo"; ctx.textAlign="left"; ctx.direction="ltr";
+  ctx.fillText(nf(lo,0), box.x+6, box.y+box.h-8);
+  ctx.fillText(nf(hi,0), box.x+6, box.y+24);
+  ctx.restore();
+}
+function certDraw(){
+  var W=1080, H=1500;
+  var cv=document.createElement("canvas"); cv.width=W; cv.height=H;
+  var ctx=cv.getContext("2d");
+  var M=54, R=W-M;
+  ctx.fillStyle="#f7f4ec"; ctx.fillRect(0,0,W,H);
+  ctx.direction="rtl"; ctx.textAlign="right";
+
+  /* الرأس */
+  ctx.fillStyle="#155b75"; ctx.fillRect(0,0,W,150);
+  ctx.fillStyle="#c9a84c"; ctx.fillRect(0,150,W,5);
+  ctx.fillStyle="#ffffff"; ctx.font="700 44px Cairo";
+  ctx.fillText("مِرقاب النيل — شهادة الرصد المستقل", R, 62);
+  ctx.font="24px Cairo"; ctx.fillStyle="#cfe3ec";
+  ctx.fillText("الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة", R, 100);
+  var now=new Date();
+  ctx.fillText("صادرة "+dmy(now.toISOString().slice(0,10))+" · build "+BUILD, R, 132);
+
+  var y=200;
+  /* صف المؤشرات */
+  var q=cur("halfa"), lvl=(q!==null&&ST.thr)?alertLevel(q):null;
+  var ens=runEnsemble(), stB=(ens&&ST.thr)?ensembleThresholdStats(ens,ST.thr.b):null;
+  var cards=[
+    {l:"الوارد لبحيرة ناصر الآن", v:(q!==null?nf(q,0):"غير محمَّل"), u:"م³/ث", c:"#155b75"},
+    {l:"الحالة", v:(lvl?lvl.nm:"—"), u:"", c:lvl&&lvl.k>=2?"#b8503f":(lvl&&lvl.k===1?"#c58a2f":"#4d7c5a")},
+    {l:"احتمال تجاوز التأهّب", v:(stB?nf(stB.prob,0):"—"), u:"%", c:"#b46f4b"},
+    {l:"العتبات", v:(ST.thrSrc==="تاريخية"?"تاريخية":"مؤقتة"), u:"", c:"#247ba0"}
+  ];
+  var cw=(W-2*M-3*18)/4, ci;
+  for(ci=0;ci<4;ci++){
+    var cx=R-ci*(cw+18)-cw;
+    ctx.fillStyle="#ffffff"; ctx.fillRect(cx,y,cw,120);
+    ctx.strokeStyle="#e2dccc"; ctx.strokeRect(cx,y,cw,120);
+    ctx.fillStyle="#7a756a"; ctx.font="20px Cairo"; ctx.fillText(cards[ci].l, cx+cw-14, y+34);
+    ctx.fillStyle=cards[ci].c; ctx.font="700 40px Cairo";
+    ctx.fillText(cards[ci].v+(cards[ci].u?" "+cards[ci].u:""), cx+cw-14, y+88);
+  }
+  y+=160;
+
+  /* منحنى حلفا */
+  ctx.fillStyle="#2a2c2b"; ctx.font="700 28px Cairo";
+  ctx.fillText("منحنى الوارد عند وادى حلفا — مرصود GloFAS ومُتتبَّع بماسكينجم والعتبات", R, y); y+=18;
+  var rt=(ST.q)? runRouting():null;
+  if(rt){
+    certSeries(ctx, {x:M, y:y, w:W-2*M, h:280}, rt.t,
+      [ {v:rt.obsHalfa, c:"#155b75", wd:3},
+        {v:rt.atHalfa,  c:"#b46f4b", wd:3, dash:[7,5]} ],
+      ST.thrSrc==="تاريخية"? ST.thr : null);
+    y+=300;
+    ctx.font="20px Cairo"; ctx.fillStyle="#7a756a";
+    ctx.fillText("متصل: GloFAS · متقطع: المُتتبَّع من الديم والأبيض وعطبرة · الخطوط الأفقية: عتبات "+(ST.thr?ST.thr.basis:"—"), R, y);
+    y+=44;
+  } else {
+    ctx.font="24px Cairo"; ctx.fillStyle="#7a756a";
+    ctx.fillText("بيانات التصرف غير محمَّلة", R, y+40); y+=90;
+  }
+
+  /* التأكيد المستقل */
+  ctx.fillStyle="#2a2c2b"; ctx.font="700 28px Cairo";
+  ctx.fillText("التأكيد المستقل من المدارات", R, y); y+=16;
+  ctx.fillStyle="#ffffff"; ctx.fillRect(M,y,W-2*M,190);
+  ctx.strokeStyle="#e2dccc"; ctx.strokeRect(M,y,W-2*M,190);
+  var ag=sarAgreement("shendi"), ch=sarChange("shendi");
+  ctx.font="24px Cairo";
+  if(ag&&ch){
+    ctx.fillStyle="#155b75"; ctx.font="700 26px Cairo";
+    ctx.fillText("رادار Sentinel-1 — السهل الفيضى عند شندى", R-20, y+40);
+    ctx.fillStyle="#2a2c2b"; ctx.font="24px Cairo";
+    ctx.fillText("ارتباط مساحة المسطح المائى بتصرف GloFAS: r = "+nf(ag.r,3)+" على "+ag.n+" لقطة — "+ag.level.g, R-20, y+80);
+    ctx.fillText("المساحة الآن "+nf(ch.kmNow,0)+" كم² · التغيّر منذ "+dmy(ch.from)+": "+(ch.main>0?"+":"")+nf(ch.main,0)+"٪", R-20, y+116);
+    ctx.fillStyle="#4d7c5a";
+    ctx.fillText("الرادار مستقل تماماً عن نموذج التنبؤ — التطابق تحقق خارجى لا معايرة ذاتية", R-20, y+154);
+  } else {
+    ctx.fillStyle="#7a756a";
+    ctx.fillText("طبقة الرادار غير محمَّلة — افتح قسم «مرصد الأقمار» ثم أعد إصدار الشهادة", R-20, y+70);
+  }
+  y+=214;
+
+  /* الألتيمترى والمطر */
+  var AS=altiStats("gerd"), ri=(ST.rain)? rainIndex():null;
+  ctx.fillStyle="#ffffff"; ctx.fillRect(M,y,W-2*M,150);
+  ctx.strokeStyle="#e2dccc"; ctx.strokeRect(M,y,W-2*M,150);
+  ctx.font="24px Cairo";
+  if(AS){
+    ctx.fillStyle="#155b75"; ctx.font="700 26px Cairo";
+    ctx.fillText("ألتيمترى DAHITI — بحيرة سد النهضة", R-20, y+40);
+    ctx.fillStyle="#2a2c2b"; ctx.font="24px Cairo";
+    ctx.fillText("المنسوب "+nf(AS.last.v,2)+" م ("+AS.last.t+") · المعدل "+(AS.rate!==null?((AS.rate>0?"+":"")+nf(AS.rate,2)):"—")+" م/٣٠ يوماً — "+(AS.trend?AS.trend.nm:"—"), R-20, y+80);
+  } else {
+    ctx.fillStyle="#7a756a";
+    ctx.fillText("طبقة الألتيمترى غير محمَّلة (قسم «الألتيمترى» — يتطلب مفتاح DAHITI)", R-20, y+52);
+  }
+  if(ri){
+    ctx.fillStyle="#2a2c2b";
+    ctx.fillText("مطر الأحواض الموزون: ماضٍ "+nf(ri.past7,1)+" مم ← قادم "+nf(ri.next7,1)+" مم (نموذج جوى لا رصد)", R-20, y+120);
+  } else {
+    ctx.fillStyle="#7a756a";
+    ctx.fillText("طبقة الأمطار غير محمَّلة", R-20, y+120);
+  }
+  y+=180;
+
+  /* الأمانة والتذييل */
+  ctx.fillStyle="#efe9d9"; ctx.fillRect(M,y,W-2*M,120);
+  ctx.fillStyle="#7a756a"; ctx.font="20px Cairo";
+  ctx.fillText("المصادر: GloFAS v4 (نمذجة) · Open-Meteo (نموذج جوى) · Sentinel-1 (رصد رادارى) · DAHITI (رصد ألتيمترى)", R-16, y+38);
+  ctx.fillText("GloFAS لا يمثّل تشغيل الخزانات (سد النهضة/الروصيرص/سنار) — طبقتا الرادار والألتيمترى تسدّان هذه الفجوة رصداً", R-16, y+70);
+  ctx.fillText("العتبات "+(ST.thr?ST.thr.basis+" ("+ST.thr.from+"–"+ST.thr.to+")":"مؤقتة — لا تُعتمد")+" · كل رقم بخاتم مصدره داخل التطبيق", R-16, y+102);
+  y+=150;
+  ctx.fillStyle="#155b75"; ctx.fillRect(0,H-64,W,64);
+  ctx.fillStyle="#ffffff"; ctx.font="22px Cairo";
+  ctx.fillText("مِرقاب النيل · mohseno2002.github.io/nile-flood-forecast", R, H-24);
+  return cv;
+}
+function certMake(){
+  ST.cert.busy=true; render();
+  var ready=(document.fonts&&document.fonts.ready)?document.fonts.ready:Promise.resolve();
+  Promise.resolve(ready).then(function(){
+    var cv=certDraw();
+    cv.toBlob(function(bl){
+      if(!bl){ ST.cert.busy=false; render(); return; }
+      if(ST.cert.url){ try{ URL.revokeObjectURL(ST.cert.url); }catch(e){} }
+      ST.cert.url=URL.createObjectURL(bl);
+      ST.cert.blob=bl;
+      ST.cert.busy=false;
+      auditLog("إصدار شهادة رصد","نشرة PNG "+todayISO());
+      render();
+    },"image/png");
+  }).catch(function(e){ ST.cert.busy=false; netErr("تعذّر إصدار الشهادة", e); render(); });
+}
+function certShare(){
+  if(!ST.cert.blob) return;
+  var f=new File([ST.cert.blob], "nile-cert-"+todayISO()+".png", {type:"image/png"});
+  if(navigator.canShare && navigator.canShare({files:[f]})){
+    navigator.share({files:[f], title:"مِرقاب النيل — شهادة الرصد المستقل"}).catch(function(){});
+  } else {
+    netErr("المشاركة غير مدعومة على هذا المتصفح — استخدم زر التنزيل", new Error("Web Share files غير متاح"));
+  }
+}
+function secCert(){
+  var s=panel("النشرة","شهادة الرصد المستقل — بضغطة واحدة",
+    '<div class="actions"><button class="btn solid" id="cert-make"'+(ST.cert.busy?" disabled":"")+'>'
+    +(ST.cert.busy?"⏳ جارٍ الإصدار…":"✦ أصدر الشهادة الآن")+'</button>'
+    +(ST.cert.url?'<button class="btn" id="cert-share">⇪ مشاركة</button>'
+      +'<a class="btn" id="cert-dl" href="'+ST.cert.url+'" download="nile-cert-'+todayISO()+'.png">⤓ تنزيل PNG</a>':"")
+    +'</div>',
+    'بطاقة واحدة تجمع: منحنى حلفا والعتبات، وتأكيد رادار شندى المستقل (r)، ومنسوب سد النهضة بالألتيمترى، ومطر الأحواض — '
+    +'<b>كل طبقة غير محمَّلة تُكتب «غير محمَّل» ولا يُختلق لها رقم</b>. للحصول على شهادة كاملة: '
+    +'افتح أقسام الرادار والألتيمترى أولاً حتى تُحمَّل طبقاتها ثم أصدرها.');
+  if(ST.cert.url)
+    s+=panel("المعاينة","هذه هى الصورة التى ستُشارك",
+      '<img src="'+ST.cert.url+'" alt="شهادة الرصد" style="width:100%;max-width:560px;border:1px solid var(--line);border-radius:8px;display:block;margin:0 auto">');
+  return s;
+}
+
 function render(){
   var c=$("content"); if(!c) return;
   var h="";
@@ -3781,6 +4213,8 @@ function render(){
   else if(ST.sec==="alerts")   h=secAlerts();
   else if(ST.sec==="skill")    h=secSkill();
   else if(ST.sec==="sources")  h=secSources();
+  else if(ST.sec==="alti")     h=secAlti();
+  else if(ST.sec==="cert")     h=secCert();
   else if(ST.sec==="install")  h=secInstall();
   c.innerHTML=h;
   bindControls();
@@ -3884,6 +4318,59 @@ function bindControls(){
     auditLog("رجوع عن معايرة", "استعادة المعاملات السابقة");
     render();
   };
+
+  el=$("calh-year"); if(el) el.onchange=function(){ ST.calH.year=parseInt(this.value,10); };
+  el=$("calh-run"); if(el) el.onclick=function(){ loadSeason(ST.calH.year); };
+  el=$("calh-apply"); if(el) el.onclick=function(){
+    if(!ST.calH.res) return;
+    var ok=[], skip=[];
+    ST.calH.res.forEach(function(c,i){ if(c&&c.best&&c.reliable) ok.push(i); else skip.push(i); });
+    if(!ok.length){
+      netErr("لا مقطع موثوقاً للاعتماد من هذا الموسم", new Error("لم يحقق أى مقطع شروط الموثوقية (ذروة داخلية + KGE ≥ 0.75)"));
+      return;
+    }
+    var names=ok.map(function(i){ return ST.reaches[i].nm; }).join("، ");
+    if(!window.confirm("معايرة موسم "+ST.calH.year+":\nسيُعتمد "+ok.length+" مقطعاً موثوقاً: "+names
+        +(skip.length?("\n\nويُستبعد "+skip.length+" مقطعاً."):"")
+        +"\n\nهل تعتمد؟")) return;
+    ST.reachesPrev=JSON.parse(JSON.stringify(ST.reaches));
+    var det=[];
+    ok.forEach(function(i){
+      var c=ST.calH.res[i];
+      det.push(ST.reaches[i].nm+": "+ST.reaches[i].K+"/"+ST.reaches[i].x+"/"+ST.reaches[i].n
+        +" ← "+c.best.K+"/"+c.best.x+"/"+c.best.n);
+      ST.reaches[i].K=c.best.K; ST.reaches[i].x=c.best.x; ST.reaches[i].n=c.best.n;
+    });
+    MwriDb.patch("apps/"+APPID+"/data/reaches", {r:JSON.stringify(ST.reaches)}).catch(function(){});
+    auditLog("اعتماد معايرة تاريخية", "موسم "+ST.calH.year+" · "+det.join(" · "));
+    render();
+  };
+  el=$("cal-undo2"); if(el) el.onclick=function(){
+    if(!ST.reachesPrev) return;
+    ST.reaches=JSON.parse(JSON.stringify(ST.reachesPrev));
+    ST.reachesPrev=null;
+    MwriDb.patch("apps/"+APPID+"/data/reaches", {r:JSON.stringify(ST.reaches)}).catch(function(){});
+    auditLog("رجوع عن معايرة", "استعادة المعاملات السابقة");
+    render();
+  };
+
+  el=$("alti-sel"); if(el) el.onchange=function(){ ST.alti.sel=this.value; render(); };
+  el=$("alti-load"); if(el) el.onclick=function(){ altiLoad(ST.alti.sel); };
+  el=$("alti-key-save"); if(el) el.onclick=function(){
+    var v=$("alti-key")? String($("alti-key").value||"").trim() : "";
+    if(!v){ netErr("المفتاح فارغ", new Error("أدخل مفتاح DAHITI أولاً")); return; }
+    try{ localStorage.setItem("mwri_dahiti_key", v); }catch(e){}
+    ST.alti.keyOk=null;
+    if($("alti-key-db") && $("alti-key-db").checked){
+      fetch(MwriDb.base+"/sh_config.json", {method:"PATCH",
+        body:JSON.stringify({dahiti_key: btoa(v)})}).catch(function(){});
+    }
+    auditLog("حفظ مفتاح DAHITI", ($("alti-key-db")&&$("alti-key-db").checked)?"محلياً + القاعدة":"محلياً");
+    altiLoad(ST.alti.sel);
+  };
+
+  el=$("cert-make"); if(el) el.onclick=function(){ certMake(); };
+  el=$("cert-share"); if(el) el.onclick=function(){ certShare(); };
 
   el=$("usr-save"); if(el) el.onclick=function(){
     var v=$("usr")? $("usr").value : "";
@@ -4028,7 +4515,9 @@ function publish(){
     kpis:{ halfa:Math.round(q||0), eldiem:Math.round(cur("eldiem")||0),
       khartoum:Math.round(cur("khartoum")||0), atbara:Math.round(cur("atbara")||0),
       level:lvl.k, prob: stB? Math.round(stB.prob) : 0 },
-    status: lvl.nm, note: operationalSentence()||""
+    status: lvl.nm, note: operationalSentence()||"",
+    /* PATCH يدمج ولا يحذف: بدون هذا السطر يظل pending:true عالقاً بعد نشر «جارٍ تحميل الأرشيف» */
+    pending:false
   }).catch(function(){});
 }
 
