@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.53</small>
+      <small id="buildtag">build 2.56</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.53";
+var BUILD = "2.56";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -771,6 +771,7 @@ var SCENARIOS = [
 
 var SECTIONS = [
   {id:"command",  icon:"⌂", eyebrow:"مركز قيادة الموجة",    title:"غرفة الفيضان"},
+  {id:"alti",     icon:"≋", eyebrow:"الألتيمترى",           title:"المناسيب المرصودة — بحيرات ومجرى"},
   {id:"finger",   icon:"◈", eyebrow:"مكانى–زمنى",           title:"بصمة الفيضان الحية"},
   {id:"ensemble", icon:"⌇", eyebrow:"٥٠ عضواً عبر التتبّع",  title:"المروحة الاحتمالية الحقيقية"},
   {id:"compose",  icon:"▤", eyebrow:"التراكب الكمى",         title:"مِمّ يتكوّن الوارد؟"},
@@ -785,7 +786,6 @@ var SECTIONS = [
   {id:"alerts",   icon:"⚑", eyebrow:"الإنذار والاستجابة",    title:"إنذارات قابلة للتتبّع"},
   {id:"skill",    icon:"◷", eyebrow:"الرقابة الذاتية",       title:"سجل أداء التنبؤ"},
   {id:"sources",  icon:"❐", eyebrow:"الشفافية",             title:"المصادر والمنهجية والحدود"},
-  {id:"alti",     icon:"≋", eyebrow:"الألتيمترى",           title:"المناسيب المرصودة — بحيرات ومجرى"},
   {id:"dam",      icon:"⛬", eyebrow:"تشغيل الخزانات",       title:"صافى الإطلاق من الألتيمترى"},
   {id:"wapor",    icon:"◉", eyebrow:"استشعار الفواقد",       title:"WaPOR — البخر والفواقد المقيسة"},
   {id:"gfh",      icon:"⊞", eyebrow:"الرأى الثانى",         title:"تنبؤ جوجل — نموذج مستقل"},
@@ -813,6 +813,7 @@ var ST = {
   dam:{ sel:"gerd", nat:null, natLoading:false, evap:5, evapSrc:"افتراضى" },
   cal:{ on:false, ref:null, model:null, loading:false, refSrc:"افتراضى" },
   rlv:{ sel:"khartoum", data:{}, arch:{}, loading:"", err:"" },
+  gwm:{ sel:"gerd", data:{}, loading:"", err:"" },
   nudge:true,
   calM:{ running:false, done:0, res:{}, fail:[] },
   rr:{ busy:false, fit:null, err:"" },
@@ -5359,10 +5360,220 @@ function altiModeBar(){
   return '<div class="ctrl"><label>نوع الهدف المرصود:</label>'
     +'<button class="btn mini'+(ST.alti.mode!=="river"?" solid":"")+'" id="alti-m-lake">◉ بحيرات (تخزين)</button>'
     +'<button class="btn mini'+(ST.alti.mode==="river"?" solid":"")+'" id="alti-m-river">⌒ مجرى النهر (تحقق)</button>'
+    +'<button class="btn mini'+(ST.alti.mode==="gwm"?" solid":"")+'" id="alti-m-gwm">◉ مصدر ثانٍ — NASA</button>'
     +'</div>';
 }
+/* =====================================================================
+   المصدر الثانى — NASA Global Water Monitor (خليفة G-REALM بعد تقاعد USDA IPAD)
+   ملفات نصية عامة بلا مفتاح:  /gwm/timeseries/lake<ID>.<cad>.2.txt
+   الأعمدة: 1 البعثة · 3 التاريخ yyyymmdd · 6 تغيّر نسبى · 7 خطأ التقدير
+            15 المنسوب فى مرجع EGM2008 (م فوق سطح البحر) · 16 علم المصدر (0=GDR نهائى · 1=IGDR شبه لحظى)
+   القيم المفقودة: 999.99 و9999.99 — تُسقَط ولا تصير صفراً
+   حدّ الوصول: المخزن بلا ترويسة CORS (مُختبَر)، فيمرّ عبر وسيط Cloudflare
+   ===================================================================== */
+var GWM_HOST="https://earth.gsfc.nasa.gov/gwm/timeseries/";
+var GWM_PROXY_DEF="https://gwm.mohseno2002.workers.dev";
+var GWM_TARGETS=[
+  { id:"gerd",   file:"lake401296.21d.2.txt", nm:"سد النهضة — SWOT", gid:"401296", cad:"٢١ يوماً",
+    dahiti:"gerd", note:"المسمّى عند NASA «Millennium» (الاسم القديم للسد). المعرّف الجيسونى 001296 توقّف عن إعطاء قيم صالحة منتصف ٢٠٢٢ فلا يُستخدَم." },
+  { id:"nasser", file:"lake000331.10d.2.txt", nm:"بحيرة ناصر", gid:"000331", cad:"١٠ أيام",
+    dahiti:"nasser", note:"سلسلة من سبتمبر ١٩٩٢ — أطول من سلسلة DAHITI ومرجعها EGM2008 معلن." },
+  { id:"rose",   file:"lake000403.10d.2.txt", nm:"خزان الروصيرص", gid:"000403", cad:"١٠ أيام",
+    dahiti:null, note:"خزان على الأزرق بين الديم والخرطوم — GloFAS لا يمثّل تشغيله إطلاقاً." },
+  { id:"jebel",  file:"lake001437.10d.2.txt", nm:"خزان جبل أولياء", gid:"001437", cad:"١٠ أيام",
+    dahiti:null, note:"خزان على الأبيض جنوب الخرطوم — GloFAS لا يمثّل تشغيله إطلاقاً." }
+];
+function gwmTarget(id){ var i; for(i=0;i<GWM_TARGETS.length;i++) if(GWM_TARGETS[i].id===id) return GWM_TARGETS[i]; return GWM_TARGETS[0]; }
+function gwmProxy(){
+  var v="";
+  try{ v=localStorage.getItem("mwri_gwm_proxy")||""; }catch(e){}
+  v=String(v).trim();
+  if(!v) return GWM_PROXY_DEF;
+  return v;
+}
+function gwmUrl(T){
+  var p=gwmProxy();
+  if(p==="direct") return GWM_HOST+T.file;
+  return p.replace(/\/+$/,"")+"/gwm?f="+encodeURIComponent(T.file);
+}
+function gwmParse(txt){
+  var lines=String(txt).split("\n"), out=[], i, p, d, v, e;
+  for(i=0;i<lines.length;i++){
+    p=lines[i].replace(/\s+/g," ").trim().split(" ");
+    if(p.length<16) continue;
+    if(!/^[0-9]{8}$/.test(p[2])) continue;
+    v=parseFloat(p[14]); e=parseFloat(p[6]);
+    if(isNaN(v) || v>9000 || v<-9000) continue;      /* 9999.99 = لا قيمة */
+    if(isNaN(e) || e>90) e=null;                      /* 99.999 = لا خطأ  */
+    d=p[2].slice(0,4)+"-"+p[2].slice(4,6)+"-"+p[2].slice(6,8);
+    out.push({ t:d, v:v, u:e, nrt:(p[15]==="1"), mis:p[0] });
+  }
+  out.sort(function(a,b){ return a.t<b.t? -1:1; });
+  return out;
+}
+function gwmLoad(id){
+  var T=gwmTarget(id);
+  if(ST.gwm.loading) return Promise.resolve(null);
+  ST.gwm.loading=id; ST.gwm.err=""; render();
+  return fetch(gwmUrl(T)).then(function(r){
+    if(!r.ok) return r.text().then(function(tx){
+      throw new Error("HTTP "+r.status+" — "+String(tx).slice(0,160)); });
+    return r.text();
+  }).then(function(tx){
+    var S=gwmParse(tx);
+    if(!S.length) throw new Error("الملف وصل لكن بلا صفوف صالحة — راجع صيغة ما يرجعه الوسيط");
+    ST.gwm.data[id]={ series:S, at:Date.now() };
+    ST.gwm.loading=""; render();
+    return ST.gwm.data[id];
+  }).catch(function(e){
+    ST.gwm.loading=""; ST.gwm.err=String(e&&e.message?e.message:e);
+    netErr("تعذّر جلب سلسلة NASA GWM ("+T.nm+")", e); render(); return null;
+  });
+}
+function gwmLast(id){
+  var D=ST.gwm.data[id];
+  if(!D||!D.series.length) return null;
+  var L=D.series[D.series.length-1];
+  return { t:L.t, v:L.v, u:L.u, nrt:L.nrt, mis:L.mis, n:D.series.length, from:D.series[0].t,
+           age:Math.max(0, Math.floor(Date.now()/864e5)-altiDayNum(L.t)) };
+}
+function gwmCard(T){
+  var L=gwmLast(T.id), big="\u2014", sub="", cls="";
+  if(L){
+    big=nf(L.v,2);
+    sub="رصد "+L.t+" · منذ "+nf(L.age,0)+" يوماً"+(L.nrt?" · شبه لحظى":" · نهائى");
+    if(L.age>45) cls="sand";
+  } else if(ST.gwm.loading===T.id){ sub="جارٍ الجلب…"; }
+  else { sub="لم تُجلب بعد"; }
+  return kpi("\u25c9", cls, T.nm, big, "م", sub);
+}
+function gwmCross(){
+  /* المقارنة الجوهرية: نفس الخزان من مصدرين مستقلين تماماً.
+     تُزاوَج كل رصدة NASA بأقرب رصدة DAHITI داخل ٧ أيام — وبغير ذلك لا تُزاوَج. */
+  var T=gwmTarget(ST.gwm.sel);
+  if(!T.dahiti) return null;
+  var G=ST.gwm.data[T.id], D=ST.alti.data[T.dahiti];
+  if(!G||!D||!D.series||!D.series.length) return null;
+  var pairs=[], i, j, best, bd, gn, dn;
+  for(i=0;i<G.series.length;i++){
+    gn=altiDayNum(G.series[i].t); best=null; bd=1e9;
+    for(j=0;j<D.series.length;j++){
+      dn=Math.abs(altiDayNum(D.series[j].t)-gn);
+      if(dn<bd){ bd=dn; best=D.series[j]; }
+    }
+    if(best && bd<=7) pairs.push({ t:G.series[i].t, g:G.series[i].v, d:best.v, dt:bd, td:best.t });
+  }
+  if(pairs.length<3) return { few:true, n:pairs.length };
+  var sum=0, mx=-1e9, mn=1e9, k;
+  for(k=0;k<pairs.length;k++){
+    var df=pairs[k].g-pairs[k].d;
+    sum+=df; if(df>mx) mx=df; if(df<mn) mn=df;
+  }
+  var mean=sum/pairs.length, sd=0;
+  for(k=0;k<pairs.length;k++) sd+=Math.pow((pairs[k].g-pairs[k].d)-mean,2);
+  sd=Math.sqrt(sd/pairs.length);
+  return { few:false, n:pairs.length, mean:mean, sd:sd, mn:mn, mx:mx, last:pairs[pairs.length-1] };
+}
+function gwmWorkerHint(){
+  return '<div class="banner warn" style="margin-top:12px"><span>\u26a0</span><div>'
+    +'<b>المخزن بلا ترويسة CORS</b> (مُختبَر بمنشأ github.io) فلا يُنادى من المتصفح مباشرةً، '
+    +'فالمسار الافتراضى هو وركر <b>gwm</b> المستقل على Cloudflare — <b>مضبوط مسبقاً فلا يحتاج إدخالاً على أى جهاز</b>. '
+    +'وهذا كوده كاملاً للرجوع أو لإعادة إنشائه:'
+    +'<pre style="white-space:pre-wrap;font-size:10px;background:#f6f2e6;padding:8px;border-radius:8px;margin-top:6px">'
+    +esc('if (url.pathname === "/gwm") {\n'
+        +'  const f = url.searchParams.get("f") || "";\n'
+        +'  if (!/^lake[0-9]+\\.[0-9]+d\\.[0-9]+\\.txt$/.test(f))\n'
+        +'    return new Response("bad f", { status: 400, headers: cors });\n'
+        +'  const r = await fetch("https://earth.gsfc.nasa.gov/gwm/timeseries/" + f);\n'
+        +'  return new Response(await r.text(), { status: r.status,\n'
+        +'    headers: { ...cors, "content-type": "text/plain; charset=utf-8" } });\n'
+        +'}')
+    +'</pre>'
+    +'حيث <b>cors</b> ترويسات <span dir="ltr">Access-Control-Allow-Origin: *</span> المستخدَمة عندك أصلاً. '
+    +'والتعبير النمطى يقصر الوسيط على ملفات GWM وحدها فلا يصير وسيطاً مفتوحاً.'
+    +'</div></div>';
+}
+function secGwm(){
+  var T=gwmTarget(ST.gwm.sel), L=gwmLast(T.id), X=gwmCross(), i;
+  var sel='<div class="ctrl"><label>الهدف:</label><select id="gwm-sel">';
+  for(i=0;i<GWM_TARGETS.length;i++)
+    sel+='<option value="'+GWM_TARGETS[i].id+'"'+(ST.gwm.sel===GWM_TARGETS[i].id?" selected":"")+'>'
+      +esc(GWM_TARGETS[i].nm)+'</option>';
+  sel+='</select><button class="btn solid" id="gwm-load"'+(ST.gwm.loading?" disabled":"")+'>'
+    +(ST.gwm.loading?"⏳ جارٍ الجلب…":"⤓ اجلب السلسلة")+'</button>'
+    +'<button class="btn mini" id="gwm-all"'+(ST.gwm.loading?" disabled":"")+'>⤓⤓ الأربعة</button>'
+    +'<button class="btn mini" id="gwm-proxy">الوسيط</button></div>';
+
+  var s=panel("المصدر الثانى — NASA GWM","رصد ألتيمترى مستقل تماماً عن DAHITI", altiModeBar()+sel,
+    'المصدر: <b>NASA Global Water Monitor</b> (خليفة G-REALM بعد تقاعد موقع USDA IPAD) — '
+    +'مناسيب من بعثات TOPEX وJason وSentinel-6A وSWOT، **بمرجع EGM2008 معلن فى ترويسة كل ملف**. '
+    +'قيمته ليست الحداثة وحدها بل أنه <b>مصدر ثانٍ مستقل</b> يسمح بمقارنة رقمنا برقم غيرنا.');
+
+  s+='<div class="grid g4" style="margin-top:15px">';
+  for(i=0;i<GWM_TARGETS.length;i++) s+=gwmCard(GWM_TARGETS[i]);
+  s+='</div>';
+
+  if(ST.gwm.err)
+    s+='<div class="banner danger" style="margin-top:12px"><span>✕</span><div>'
+      +'<b>آخر خطأ:</b> '+esc(ST.gwm.err)
+      +'<div style="margin-top:4px;font-size:11px">«Failed to fetch» تعنى غالباً CORS أو وسيطاً بلا مسار /gwm · '
+      +'HTTP 404 تعنى أن الوسيط لا يعرف المسار · HTTP 400 صيغة اسم ملف مرفوضة.</div></div></div>';
+
+  if(L){
+    var D=ST.gwm.data[T.id], S=D.series, t=[], v=[], step=Math.max(1,Math.floor(S.length/240));
+    for(i=0;i<S.length;i+=step){ t.push(S[i].t); v.push(S[i].v); }
+    if((S.length-1)%step!==0){ t.push(S[S.length-1].t); v.push(S[S.length-1].v); }
+    s+=panel(esc(T.nm),"NASA "+esc(T.gid)+" · دورة "+esc(T.cad)+" · "+S.length+" رصدة من "+esc(S[0].t),
+      '<div class="chart-box">'+plot({t:t, yTitle:"منسوب (م فوق سطح البحر · EGM2008)",
+        series:[{v:v,color:"#155b75",wd:2.2}]})+'</div>', esc(T.note));
+
+    var rows="", k, last=S.slice(-8);
+    for(k=last.length-1;k>=0;k--)
+      rows+='<tr><td>'+esc(last[k].t)+'</td><td class="num"><b>'+nf(last[k].v,2)+'</b></td>'
+        +'<td class="num">'+(last[k].u!==null?("±"+nf(last[k].u,3)):"—")+'</td>'
+        +'<td>'+esc(last[k].mis)+'</td>'
+        +'<td><span class="pill '+(last[k].nrt?"sand":"green")+'">'+(last[k].nrt?"شبه لحظى IGDR":"نهائى GDR")+'</span></td></tr>';
+    s+='<div class="tb-wrap" style="margin-top:12px"><table class="tb"><thead><tr>'
+      +'<th>التاريخ</th><th>المنسوب (م)</th><th>خطأ التقدير</th><th>البعثة</th><th>نوع المنتج</th>'
+      +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
+    s+=stampPill("obs")+' <span style="font-size:11px;color:var(--muted)">رصد ألتيمترى مباشر — '
+      +'و«شبه لحظى» يعنى منتجاً أوّلياً يُنشر بعد المرور بأيام وقد يُنقَّح لاحقاً.</span>';
+  }
+
+  if(X){
+    if(X.few){
+      s+='<div class="banner warn" style="margin-top:15px"><span>⚠</span><div>'
+        +'<b>لا مقارنة بعد:</b> '+X.n+' زوج فقط داخل نافذة ٧ أيام. اجلب سلسلة DAHITI لنفس الهدف من تبويب «بحيرات» أولاً.</div></div>';
+    } else {
+      var agree = Math.abs(X.mean)<=0.5 ? {c:"green",n:"اتفاق وثيق"} :
+                  (Math.abs(X.mean)<=1.5 ? {c:"sand",n:"اتفاق مقبول"} : {c:"danger",n:"تباعد يستدعى المراجعة"});
+      s+=panel("التحقق المتقاطع","نفس الخزان من مصدرين لا يشتركان فى معالجة ولا فريق",
+        '<div class="grid g4">'
+        +kpi("Δ", agree.c, "متوسط الفارق NASA − DAHITI", (X.mean>0?"+":"")+nf(X.mean,2),"م", X.n+" زوج داخل ٧ أيام")
+        +kpi("σ","","انتشار الفارق", nf(X.sd,2),"م","المدى "+nf(X.mn,2)+" إلى "+nf(X.mx,2))
+        +kpi("◉","","آخر زوج", nf(X.last.g,2),"م","NASA "+X.last.t+" · DAHITI "+nf(X.last.d,2)+" م "+X.last.td)
+        +kpi("✓", agree.c, "الحكم", esc(agree.n),"","اتفاق ≤٠٫٥ م · مقبول ≤١٫٥ م")
+        +'</div>',
+        '<b>لماذا هذا الرقم مهم:</b> المصدران يستخدمان بعثات ومرجعيات ومعالجات مختلفة، '
+        +'فاتفاقهما يرفع الثقة فى المنسوب المطلق نفسه لا فى الشكل وحده. '
+        +'<b>لكنه لا يحلّ مسألة مرجع مقياس السد العالى</b> — كلاهما جيودى، '
+        +'وقد ينحرفان معاً عن المرجع المحلى بنفس المقدار.');
+    }
+  }
+
+  s+=gwmWorkerHint();
+  s+='<div class="banner info" style="margin-top:10px"><span>ℹ</span><div>'
+    +'<b>حدود معلنة.</b> الدورة ٢١ يوماً لSWOT و١٠ أيام لجيسون/Sentinel-6A — '
+    +'وهذا <b>حدّ مدارى</b> لا تتخطّاه أى معالجة، فلا وجود لألتيمترى لحظى. '
+    +'والفجوة المعتادة بين آخر رصدة واليوم أسبوعان إلى ستة أسابيع (المرور + النشر). '
+    +'هذه الطبقة <b>لا تدخل التتبّع ولا الإنذار</b> — وظيفتها الرصد المستقل والتحقق.'
+    +'</div></div>';
+  return s;
+}
+
 function secAlti(){
   if(ST.alti.mode==="river") return altiModeBar()+secRlev();
+  if(ST.alti.mode==="gwm") return secGwm();
   var T=altiTarget(ST.alti.sel), D=ST.alti.data[ST.alti.sel], A=altiStats(ST.alti.sel);
   var sel='<div class="ctrl"><label>البحيرة:</label><select id="alti-sel">',i;
   for(i=0;i<ALTI_TARGETS.length;i++)
@@ -7016,6 +7227,28 @@ function bindControls(){
 
   el=$("alti-m-lake"); if(el) el.onclick=function(){ ST.alti.mode="lake"; render(); };
   el=$("alti-m-river"); if(el) el.onclick=function(){ ST.alti.mode="river"; render(); };
+  el=$("alti-m-gwm"); if(el) el.onclick=function(){ ST.alti.mode="gwm"; render(); };
+  el=$("gwm-sel"); if(el) el.onchange=function(){ ST.gwm.sel=this.value; render(); };
+  el=$("gwm-load"); if(el) el.onclick=function(){ gwmLoad(ST.gwm.sel); };
+  el=$("gwm-all"); if(el) el.onclick=function(){
+    var ids=GWM_TARGETS.map(function(T){ return T.id; });
+    var chain=Promise.resolve();
+    ids.forEach(function(id){
+      chain=chain.then(function(){ return gwmLoad(id); }).catch(function(){ return null; });
+    });
+  };
+  el=$("gwm-proxy"); if(el) el.onclick=function(){
+    var cur=gwmProxy();
+    var v=window.prompt("عنوان وسيط GWM (اكتب default للعودة للافتراضى، أو direct لمحاولة النداء المباشر):", cur);
+    if(v===null) return;
+    v=String(v).trim();
+    try{
+      if(!v||v==="default") localStorage.removeItem("mwri_gwm_proxy");
+      else localStorage.setItem("mwri_gwm_proxy", v);
+    }catch(e){}
+    auditLog("ضبط وسيط GWM", v||"افتراضى");
+    ST.gwm.err=""; render();
+  };
   el=$("alti-sel"); if(el) el.onchange=function(){ ST.alti.sel=this.value; render(); };
   el=$("alti-load"); if(el) el.onclick=function(){ altiLoad(ST.alti.sel); };
   el=$("alti-key-save"); if(el) el.onclick=function(){
