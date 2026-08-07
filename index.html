@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.67</small>
+      <small id="buildtag">build 2.74</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.67";
+var BUILD = "2.74";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -5137,7 +5137,7 @@ function mcalLoad(){
    الانكسار عند H=14.00 م سببه فيزيائى: منسوب الشاطئ (Bankfull) —
    فوقه تنتشر المياه فى السهل الفيضى فيتغيّر نصف القطر الهيدروليكى والنقلية.
    تعيد إنتاج جدول القطاع بخطأ ٠٫٠٠–٠٫٠٢٪ ومتصلة عند الانكسار (فجوة ٠٫٠٢).
-   صفر المقياس ٢١٠٫٦٠ م فوق سطح البحر — يربط قراءة المقياس بأى مرجع جيودى.
+   صفر المقياس ٢١٠٫٦٠ م فوق سطح البحر على مرجع رأسى محلى — ولا يُربط بالألتيمترى قبل حل Δdatum محلياً.
    ===================================================================== */
 var DON_ZERO=210.60, DON_BREAK=14.00, DON_LO=10.00, DON_HI=16.00;
 var DON_NOFLOW=1572.5/168.35;      /* ٩٫٣٤ م — المنسوب الذى ينعدم عنده التصريف فعلياً */
@@ -5149,6 +5149,313 @@ function dongolaQ(H, cms){
   if(q<0) q=0;
   return cms ? q*1e6/86400 : q;
 }
+
+/* فحص datum دنقلا — تشخيص موسمى فقط، لا يُطبَّق على التتبّع ولا على Q التشغيلية.
+   الفكرة: الإزاحة الرأسية لا تغيّر اتساع المنسوب، لذلك نستخدم الاتساع لاختبار شكل منحنى التصريف،
+   ثم نستخدم موضع التحاريق/الذروة لتضييق Δdatum. المراجع هنا نطاقات موسمية للتشخيص
+   وليست قيود إغلاق حجم ولا بديلاً عن الإجماليات الوزارية السنوية المستقلة. */
+var DON_ANCHOR_H=10.10;            /* مرساة حقلية: متوسط قاع التحاريق، النصف الثانى من مايو 2024 */
+var DON_ANCHOR_U=0.05;             /* عدم يقين المرساة: متوسط نصف شهر من سجل ورقى */
+var DON_DATUM=null, DON_DATUM_U=null, DON_DATUM_SRC='';
+
+/* يحلّ الإزاحة الرأسية بين مرجع DAHITI الجيودى ومرجع مقياس دنقلا المحلى.
+   لا يفترض Delta=0 ولا يختلق قيمة عند غياب البيانات — يرجع null بحالة معلنة. */
+function donResolve(series, hObs, sigA){
+  var i, j, row;
+  var anchorH=(typeof hObs==='number'&&!isNaN(hObs))?hObs:DON_ANCHOR_H;
+  var sigAnchor=(typeof sigA==='number'&&!isNaN(sigA))?sigA:DON_ANCHOR_U;
+  if(!series||!series.length) return { st:'noseries', datum:null, u:null,
+    msg:'لم تُجلب سلسلة DAHITI عند دنقلا بعد — اضغط زر الجلب.' };
+
+  var win=[], used='١٦–٣١ مايو ٢٠٢٤';
+  for(i=0;i<series.length;i++){ row=series[i];
+    if(row&&typeof row.t==='string'&&row.t>='2024-05-16'&&row.t<='2024-05-31'&&typeof row.v==='number'&&!isNaN(row.v)) win.push(row); }
+  if(!win.length){ used='١–١٥ مايو ٢٠٢٤ (نافذة ممتدة للخلف)';
+    for(i=0;i<series.length;i++){ row=series[i];
+      if(row&&typeof row.t==='string'&&row.t>='2024-05-01'&&row.t<='2024-05-15'&&typeof row.v==='number'&&!isNaN(row.v)) win.push(row); } }
+  if(!win.length) return { st:'gap', datum:null, u:null,
+    msg:'لا رصدة مدارية واحدة فى مايو ٢٠٢٤ — لا يُحلّ المرجع.' };
+
+  var N=win.length, sv=0, su=0, cu=0;
+  for(i=0;i<N;i++){ sv+=win[i].v;
+    if(typeof win[i].u==='number'&&!isNaN(win[i].u)){ su+=win[i].u; cu++; } }
+  var avg=sv/N, avgU=(cu>0)?(su/cu):null;
+
+  var vr=0;
+  if(N>1){ for(i=0;i<N;i++) vr+=Math.pow(win[i].v-avg,2); vr=vr/(N-1); }
+  var sd=Math.sqrt(vr);
+  /* الخطأ المعيارى لمتوسط فترة = الأكبر بين تباين المنسوب الفعلى وضجيج القياس */
+  var seSam=(N>0)?(sd/Math.sqrt(N)):0;
+  var seMea=(avgU!==null)?(avgU/Math.sqrt(N)):0;
+  var se=Math.max(seSam,seMea);
+  var uTot=(avgU!==null)?Math.sqrt(se*se+sigAnchor*sigAnchor):null;
+
+  /* قاع موسم التحاريق ٢٠٢٤ حصراً — أدنى السلسلة كله معلومة تُعرض لا مرجع يُقارن به */
+  var m24=null, m24t=null, m24u=null, ab=null, abt=null, mx=null, mxt=null;
+  for(j=0;j<series.length;j++){ row=series[j];
+    if(!row||typeof row.v!=='number'||isNaN(row.v)) continue;
+    if(ab===null||row.v<ab){ ab=row.v; abt=row.t; }
+    if(mx===null||row.v>mx){ mx=row.v; mxt=row.t; }
+    if(typeof row.t==='string'&&row.t>='2024-03-01'&&row.t<='2024-06-30'&&(m24===null||row.v<m24)){
+      m24=row.v; m24t=row.t; m24u=(typeof row.u==='number'&&!isNaN(row.u))?row.u:null; } }
+  if(m24===null) return { st:'nomin', datum:null, u:null, avg:avg, n:N, used:used, ab:ab, abt:abt,
+    msg:'لا رصدة فى موسم تحاريق ٢٠٢٤ (مارس–يونيو) — لا قاع موسمى يُقارن به.' };
+
+  var inWin=(m24t>='2024-05-16'&&m24t<='2024-05-31'&&used.indexOf('١٦')===0)||
+            (m24t>='2024-05-01'&&m24t<='2024-05-15'&&used.indexOf('١–١٥')===0);
+  var uMin=(m24u!==null)?m24u:((avgU!==null)?avgU:0);
+  var sDiff=Math.sqrt(se*se+uMin*uMin), noise=2*sDiff;
+  var rise=avg-m24;
+  var trivial=inWin||(Math.abs(rise)<=noise);
+
+  var datum=anchorH-(avg-DON_ZERO);
+  return { st:'ok', datum:datum, u:uTot, avg:avg, sd:sd, se:se, n:N, cu:cu, avgU:avgU,
+    used:used, m24:m24, m24t:m24t, ab:ab, abt:abt, mx:mx, mxt:mxt, rise:rise, noise:noise,
+    inWin:inWin, trivial:trivial, anchorH:anchorH, sigA:sigAnchor };
+}
+
+/* تحويل رصدة DAHITI إلى تصرف مرصود مشتق — بشريط خطأ لا رقم مسطّح.
+   خارج نطاق المنحنى المعتمد ترجع null ولا تُستقرأ. */
+function donQ(vD, datum, sig, cms){
+  if(typeof vD!=='number'||isNaN(vD)||typeof datum!=='number'||isNaN(datum))
+    return { h:null, q:null, lo:null, hi:null, why:'المرجع أو الرصدة غير متاحين' };
+  var h=vD+datum-DON_ZERO;
+  var q=dongolaQ(h,cms);
+  if(q===null) return { h:h, q:null, lo:null, hi:null,
+    why:'خارج نطاق المنحنى المعتمد ١٠٫٠٠–١٦٫٠٠ م' };
+  var sg=(typeof sig==='number'&&!isNaN(sig))?Math.abs(sig):0;
+  return { h:h, q:q, lo:dongolaQ(h-sg,cms), hi:dongolaQ(h+sg,cms), why:'' };
+}
+
+function donState(D){
+  var R=donResolve((D&&D.series)?D.series:null, DON_ANCHOR_H, DON_ANCHOR_U);
+  ST.rlv.don=R;
+  /* الأولوية لمتوسط الشهور: أربع مزاوجات مستقلة أوثق من نافذة واحدة */
+  var M=donMonthly((D&&D.series)?D.series:null);
+  ST.rlv.donMon=M;
+  if(M&&M.k>=3&&M.mean!==null){ DON_DATUM=M.mean; DON_DATUM_U=M.se; DON_DATUM_SRC='شهرى'; }
+  else if(R.st==='ok'){ DON_DATUM=R.datum; DON_DATUM_U=R.u; DON_DATUM_SRC='نافذة مايو'; }
+  else { DON_DATUM=null; DON_DATUM_U=null; DON_DATUM_SRC=''; }
+  return R;
+}
+
+/* السلسلة المرصودة المشتقّة: كل رصدة DAHITI تُحوَّل بمنحنى الوزارة إلى تصرف بحدّيه.
+   ليست قياساً مباشراً — القمر قاس منسوباً والمنحنى حوّله. */
+function donDerived(series){
+  if(!series||!series.length||DON_DATUM===null) return null;
+  var i, out=[], nOut=0, sg=(DON_DATUM_U!==null)?DON_DATUM_U:0;
+  for(i=0;i<series.length;i++){
+    var r=series[i];
+    if(!r||typeof r.v!=='number'||isNaN(r.v)) continue;
+    var z=donQ(r.v, DON_DATUM, sg, true);
+    if(z.q===null){ nOut++; out.push({ t:r.t, v:r.v, h:z.h, q:null }); }
+    else out.push({ t:r.t, v:r.v, h:z.h, q:z.q, lo:z.lo, hi:z.hi });
+  }
+  out.sort(function(a,b){ return a.t<b.t?-1:(a.t>b.t?1:0); });
+  var got=[], mx=null;
+  for(i=0;i<out.length;i++) if(out[i].q!==null){ got.push(out[i]); if(mx===null||out[i].q>mx.q) mx=out[i]; }
+  return { rows:out, n:out.length, nQ:got.length, nOut:nOut,
+    last:(got.length?got[got.length-1]:null), max:mx, sigma:sg };
+}
+function donDerivedHtml(D){
+  var S=(D&&D.series)?D.series:null;
+  var X=donDerived(S);
+  if(!X) return "";
+  var i, tr="", rows=X.rows.slice(-12).reverse();
+  for(i=0;i<rows.length;i++){
+    var r=rows[i];
+    tr+='<tr><td dir="ltr">'+esc(r.t)+'</td>'
+      +'<td class="num">'+nf(r.v,2)+'</td>'
+      +'<td class="num">'+nf(r.h,2)+'</td>'
+      +'<td class="num">'+(r.q!==null?('<b>'+nf(r.q,0)+'</b>'):'—')+'</td>'
+      +'<td class="num">'+((r.q!==null&&r.lo!==null&&r.hi!==null)?(nf(r.lo,0)+'–'+nf(r.hi,0)):'—')+'</td>'
+      +'<td>'+(r.q!==null?'<span class="pill green">داخل المنحنى</span>':'<span class="pill sand">خارج ١٠–١٦</span>')+'</td></tr>';
+  }
+  var body='<div class="grid g4">'
+    +kpi('Σ','lake','رصدات محوَّلة',X.nQ+' / '+X.n,'رصدة',X.nOut+' خارج نطاق المنحنى')
+    +kpi('◷','green','أحدث تصرف مشتقّ',(X.last?nf(X.last.q,0):'—'),'م³/ث',(X.last?esc(X.last.t):'—'))
+    +kpi('▲','lake','أعلى تصرف مشتقّ',(X.max?nf(X.max.q,0):'—'),'م³/ث',(X.max?esc(X.max.t):'—'))
+    +kpi('Δ','','المرجع المستعمَل',nf(DON_DATUM,2),'م','±'+nf(DON_DATUM_U,3)+' م · '+esc(DON_DATUM_SRC))
+    +'</div>';
+  body+='<div class="banner info" style="margin-top:12px"><span>ℹ</span><div>'
+    +'<b>تصرف مرصود مشتقّ — لا قياس مباشر.</b> القمر قاس <b>منسوباً</b>، ومنحنى قطاع مياه النيل هو الذى حوّله إلى تصرف. '
+    +'فترتيبه فى الثقة: قياس ميدانى مباشر ← <b>تصرف دنقلا المرصود المشتقّ</b> ← معايرة مبنية على قياسات ← GloFAS الخام. '
+    +'وكل قيمة تُعرض بحدّيها من إزاحة ±'+nf(X.sigma,3)+' م، ولا يُستقرأ خارج ١٠٫٠٠–١٦٫٠٠ م.</div></div>';
+  body+='<div class="tb-wrap" style="margin-top:12px"><table class="tb"><thead><tr>'
+    +'<th>التاريخ</th><th>DAHITI (م)</th><th>قراءة المقياس (م)</th><th>تصرف (م³/ث)</th><th>المدى</th><th></th>'
+    +'</tr></thead><tbody>'+tr+'</tbody></table></div>'
+    +'<p class="note">آخر ١٢ رصدة من '+X.n+'. الحدّان من إزاحة المرجع وحدها ولا يشملان عدم يقين المنحنى نفسه ولا الانحراف الهيدروليكى بين ساقَى الصعود والهبوط (٨–١٥٪).</p>';
+  return panel('سلسلة التصرف المرصود المشتقّ — دنقلا','منسوب DAHITI ← إزاحة المرجع ← منحنى قطاع مياه النيل',body,
+    'أول سلسلة تصرف فى التطبيق مصدرها رصد لا نموذج. تُقرأ للفيضان أوثق منها للتحاريق: '
+    +'عند التحاريق تخرج بعض القراءات دون ١٠٫٠٠ م فتُرَدّ بلا قيمة.');
+}
+
+/* المزاوجة الشهرية: أربعة متوسطات مقياس حقلية مقابل متوسطات مدارية لنفس الشهر.
+   قيمتها أن الإزاحة الثابتة لا تغيّر الفروق بين الشهور — فتشتّت Delta عبر الشهور
+   اختبار شكل مستقل عن المرجع تماماً، ومتوسطها يلغى ضجيج المرور المفرد. */
+var DON_MON = [
+  { k:"2024-03", nm:"مارس ٢٠٢٤",  g:10.45 },
+  { k:"2024-04", nm:"أبريل ٢٠٢٤", g:10.25 },
+  { k:"2024-05", nm:"مايو ٢٠٢٤",  g:10.10 },
+  { k:"2024-06", nm:"يونيو ٢٠٢٤", g:10.38 }
+];
+function donMonthly(series){
+  if(!series||!series.length) return null;
+  var i,j,rows=[],used=[];
+  for(i=0;i<DON_MON.length;i++){
+    var M=DON_MON[i], sv=0, su=0, cu=0, n=0, lo=null, hi=null;
+    for(j=0;j<series.length;j++){
+      var r=series[j];
+      if(!r||typeof r.t!=='string'||r.t.slice(0,7)!==M.k) continue;
+      if(typeof r.v!=='number'||isNaN(r.v)) continue;
+      sv+=r.v; n++;
+      if(lo===null||r.v<lo) lo=r.v;
+      if(hi===null||r.v>hi) hi=r.v;
+      if(typeof r.u==='number'&&!isNaN(r.u)){ su+=r.u; cu++; }
+    }
+    var row={ nm:M.nm, k:M.k, g:M.g, n:n,
+      avg:(n>0)?(sv/n):null, u:(cu>0)?(su/cu):null, lo:lo, hi:hi, d:null };
+    if(n>0) row.d = M.g - (row.avg - DON_ZERO);
+    rows.push(row);
+    if(n>0) used.push(row);
+  }
+  if(used.length<2) return { rows:rows, k:used.length, mean:null, spread:null, sd:null };
+  var sd2=0, m=0;
+  for(i=0;i<used.length;i++) m+=used[i].d;
+  m=m/used.length;
+  var mn=used[0].d, mx=used[0].d;
+  for(i=0;i<used.length;i++){ sd2+=Math.pow(used[i].d-m,2);
+    if(used[i].d<mn) mn=used[i].d; if(used[i].d>mx) mx=used[i].d; }
+  var sdObs=Math.sqrt(sd2/(used.length-1));
+  /* التشتّت المتوقَّع من ضجيج القياس وحده: SE لكل شهر = u/sqrt(n) */
+  var q=0, cq=0;
+  for(i=0;i<used.length;i++){
+    var uu=(used[i].u!==null)?used[i].u:null;
+    if(uu===null) continue;
+    var sem=uu/Math.sqrt(used[i].n); q+=sem*sem; cq++;
+  }
+  var sdExp=(cq>0)?Math.sqrt(q/cq):null;
+  return { rows:rows, k:used.length, mean:m, spread:mx-mn,
+    sd:sdObs, sdExp:sdExp, se:sdObs/Math.sqrt(used.length), lo:mn, hi:mx,
+    ratio:(sdExp!==null&&sdExp>0)?(sdObs/sdExp):null };
+}
+function donMonthlyHtml(D){
+  var M=donMonthly((D&&D.series)?D.series:null);
+  if(!M) return "";
+  var i,tr="";
+  for(i=0;i<M.rows.length;i++){
+    var R=M.rows[i];
+    tr+='<tr><td><b>'+esc(R.nm)+'</b></td>'
+      +'<td class="num">'+nf(R.g,2)+'</td>'
+      +'<td class="num">'+(R.avg!==null?nf(R.avg,2):'—')+'</td>'
+      +'<td class="num">'+R.n+'</td>'
+      +'<td class="num">'+(R.d!==null?'<b>'+nf(R.d,2)+'</b>':'—')+'</td>'
+      +'<td>'+(R.n===0?'<span class="pill sand">لا رصدة</span>':(R.n===1?'<span class="pill sand">مرور واحد</span>':'<span class="pill green">'+R.n+' مرور</span>'))+'</td></tr>';
+  }
+  var head='<div class="tb-wrap"><table class="tb"><thead><tr>'
+    +'<th>الشهر</th><th>متوسط المقياس (م)</th><th>متوسط DAHITI (م)</th><th>رصدات</th><th>Δ الشهر (م)</th><th></th>'
+    +'</tr></thead><tbody>'+tr+'</tbody></table></div>';
+  var out=head;
+  if(M.k<2){
+    out+='<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
+      +'<b>شهر واحد أو لا شىء.</b> لا يُقاس تشتّت ولا يُختبر شكل — المزاوجة الشهرية تحتاج شهرين على الأقل.</div></div>';
+    return panel('المزاوجة الشهرية — اختبار الشكل','أربعة متوسطات مقياس حقلية مقابل متوسطات مدارية لنفس الشهر',out,
+      'الإزاحة الثابتة لا تغيّر الفروق بين الشهور، فتشتّت Δ عبر الشهور اختبار مستقل عن المرجع.');
+  }
+  /* الحكم على التشتّت المرصود مقابل المتوقَّع من الضجيج — لا عتبة ثابتة.
+     العتبة الثابتة كانت تعلن تعارضاً على فرق داخل الضجيج (نفس درس isTrivialMatch). */
+  var okShape=(M.ratio!==null)?(M.ratio<=2.0):(M.spread<=0.20);
+  out+='<div class="grid g4" style="margin-top:12px">'
+    +kpi('Δ',(okShape?'green':'danger'),'متوسط Δ الشهرى',nf(M.mean,2),'م','±'+nf(M.se,3)+' م · '+M.k+' شهور')
+    +kpi('↔',(okShape?'green':'danger'),'تشتّت Δ بين الشهور',nf(M.spread,2),'م','من '+nf(M.lo,2)+' إلى '+nf(M.hi,2))
+    +kpi('s','','الانحراف المعيارى',nf(M.sd,3),'م',(M.sdExp!==null?('المتوقَّع من الضجيج '+nf(M.sdExp,3)):'بين الشهور'))
+    +kpi('✓',(okShape?'green':'danger'),'حكم الشكل',(okShape?'متسق':'متعارض'),'',
+      (M.ratio!==null?('المرصود ÷ المتوقَّع = '+nf(M.ratio,2)+' · الحدّ ٢٫٠'):'الحدّ ٠٫٢٠ م'))
+    +'</div>';
+  if(okShape) out+='<div class="banner ok" style="margin-top:12px"><span>✓</span><div>'
+    +'<b>الشكل متسق.</b> تشتّت Δ بين الشهور '+nf(M.sd,3)+' م مقابل '
+    +(M.sdExp!==null?nf(M.sdExp,3):'—')+' م متوقَّعة من ضجيج القياس وحده — '
+    +'أى داخل ما يفسّره الضجيج بلا حاجة إلى تعارض حقيقى. '
+    +'وهذا اختبار <b>مستقل عن المرجع الرأسى تماماً</b> لأن أى إزاحة ثابتة تُلغى بالطرح. '
+    +'فمتوسط Δ الشهرى <b>'+nf(M.mean,2)+' ± '+nf(M.se,3)+' م</b> أوثق من قيمة الشهر الواحد '
+    +'— وبه يخرج التصرف المشتقّ بنحو ±'+nf(M.se*168.35*1e6/86400,0)+' م³/ث عند التحاريق.</div></div>';
+  else out+='<div class="banner danger" style="margin-top:12px"><span>⛔</span><div>'
+    +'<b>تعارض فى الشكل لا يُصلحه أى مرجع.</b> تشتّت Δ '+nf(M.sd,3)+' م مقابل '
+    +(M.sdExp!==null?nf(M.sdExp,3):'—')+' م متوقَّعة من الضجيج (النسبة '
+    +(M.ratio!==null?nf(M.ratio,2):'—')+') — '
+    +'والإزاحة الثابتة لا تغيّر الفروق بين الشهور، فاختلافها يعنى أن <b>أحد المصدرين يصف مساراً مختلفاً</b>: '
+    +'إمّا رصدة مدارية شاذّة، أو متوسط شهرى حقلى لا يقابل نفس الفترة. '
+    +'لا يُعتمد Δ من أى شهر منفرد قبل تفسير التعارض.</div></div>';
+  return panel('المزاوجة الشهرية — اختبار الشكل','أربعة متوسطات مقياس حقلية مقابل متوسطات مدارية لنفس الشهر',out,
+    'المتوسطات الحقلية من سجل رصد قطاع مياه النيل (مارس–يونيو ٢٠٢٤). '
+    +'الاختبار على <b>الفروق بين الشهور</b> فهو مستقل عن المرجع الرأسى ولا يمكن لأى إزاحة أن تُنجحه أو تُسقطه.');
+}
+
+function dongolaDatumDiagPanel(D){
+  var R=donState(D);
+  var body;
+  if(R.st!=='ok'){
+    body='<div class="banner warn"><span>⚠</span><div><b>المرجع الرأسى غير محلول.</b> '+esc(R.msg)
+      +' وحتى يُحلّ <b>لا يُحوَّل أى منسوب إلى تصرف</b> ولا تُعرض قيمة مفترضة.</div></div>';
+    return panel('مرجع دنقلا الرأسى — Δdatum','حلّ الإزاحة من مزاوجة المرساة الحقلية بمتوسط نافذة مدارية',body,
+      'صفر مقياس دنقلا ٢١٠٫٦٠ م على <b>مرجع رأسى محلى</b>، ومناسيب DAHITI ارتفاعات سوّية على جيويد EIGEN-6C4 — فالمرجعان لا يتطابقان بالفرض.');
+  }
+
+  var uTxt=(R.u!==null)?(' ± '+nf(R.u,2)+' م'):' م (عدم اليقين غير مكتمل)';
+  var qTop=donQ(R.mx,R.datum,R.u,true);
+  var cls=(R.inWin||R.trivial)?'sand':'green';
+
+  body='<div class="grid g4">'
+    +kpi('Δ',cls,'الإزاحة المحلولة',nf(R.datum,2),'م',(R.u!==null?('±'+nf(R.u,2)+' م'):'بلا هامش'))
+    +kpi('◎','lake','متوسط النافذة',nf(R.avg,2),'م',esc(R.used)+' · '+R.n+' رصدة')
+    +kpi('⌄','lake','قاع تحاريق ٢٠٢٤',nf(R.m24,2),'م',esc(R.m24t||'—')+' · مارس–يونيو')
+    +kpi('↑',(R.trivial?'sand':'green'),'ارتفاع المتوسط فوق القاع',nf(R.rise,2),'م','حدّ الضجيج ±'+nf(R.noise,2))
+    +'</div>';
+
+  body+='<div class="grid g4" style="margin-top:12px">'
+    +kpi('σ','','الخطأ المعيارى للمتوسط',nf(R.se,3),'م','الأكبر بين تباين العيّنة وضجيج القياس')
+    +kpi('u','','عدم يقين مدارى متاح',R.cu+' / '+R.n,'رصدة',(R.avgU!==null?('متوسطه ±'+nf(R.avgU,3)+' م'):'غير متاح'))
+    +kpi('⚓','','المرساة الحقلية',nf(R.anchorH,2),'م','±'+nf(R.sigA,2)+' م · النصف الثانى من مايو ٢٠٢٤')
+    +kpi('▾','','أدنى السلسلة كلها',(R.ab!==null?nf(R.ab,2):'—'),'م',esc(R.abt||'—'))
+    +'</div>';
+
+  body+='<div class="banner info" style="margin-top:12px"><span>ℹ</span><div>'
+    +'<b>Δ = '+nf(R.datum,2)+uTxt+' — رقم محسوب لا مُختبَر.</b> '
+    +'لا يوجد فى هذه الطبقة اختبار مستقل يمكن أن تفشل فيه القيمة: '
+    +'المرساة الحقلية والمتوسط المدارى مدخلان، وΔ مخرَجهما الوحيد. '
+    +'الاختبار المستقل يحتاج إجمالى وارد حلفا المقيس لسنة مائية كاملة.</div></div>';
+
+  if(R.n<3) body+='<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
+    +'<b>Δ يقوم على '+R.n+' رصدة فقط.</b> بهذا العدد لا يوجد «متوسط فترة» حقيقى: '
+    +'الانحراف المعيارى للعيّنة يساوى صفراً بالبناء، فكل الهامش يأتى من عدم يقين القياس المدارى وحده '
+    +'ولا يُمثَّل تغيّر المنسوب الفعلى داخل النصف الثانى من مايو. '
+    +'المرساة الحقلية متوسط نصف شهر، والمقابل المدارى مرور واحد — فالمزاوجة غير متكافئة والرقم أوّلى.</div></div>';
+
+  if(R.inWin) body+='<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
+    +'<b>قاع ٢٠٢٤ يقع داخل نافذة التجميع نفسها.</b> فمقارنة المتوسط بالقاع غير مستقلة — '
+    +'أدنى عيّنة تقع تحت متوسط عيّناتها حتماً بمحض السحب العشوائى. الفرق المعروض وصفى لا حكم.</div></div>';
+  else if(R.trivial) body+='<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
+    +'<b>الفرق بين المتوسط والقاع داخل الضجيج</b> ('+nf(R.rise,2)+' م مقابل حدّ ±'+nf(R.noise,2)+' م) — '
+    +'فلا يُقرأ كارتفاع حقيقى للمجرى.</div></div>';
+
+  body+='<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
+    +'<b>ما يحمله هذا الرقم من خطأ.</b> كل ١٠ سم إزاحة = نحو ١٩٥ م³/ث فى الشريحة الدنيا و٢٤٥ فى العليا. '
+    +'فبهامش '+(R.u!==null?nf(R.u,2):'—')+' م يخرج التصرف المشتقّ بنحو <b>±'
+    +(R.u!==null?nf(R.u*168.35*1e6/86400,0):'—')+' م³/ث</b> عند التحاريق. '
+    +'ولذلك يُعرض التصرف المرصود المشتقّ <b>بحدّيه دائماً</b> لا برقم واحد.</div></div>';
+
+  if(qTop.q!==null) body+='<p class="note">تحقّق التحويل عند أعلى رصدة فى السلسلة ('+esc(R.mxt||'—')+'): '
+    +'منسوب '+nf(R.mx,2)+' م جيودياً ← قراءة مقياس '+nf(qTop.h,2)+' م ← <b>تصرف مشتقّ '+nf(qTop.q,0)+' م³/ث</b>'
+    +((qTop.lo!==null&&qTop.hi!==null)?(' · المدى '+nf(qTop.lo,0)+'–'+nf(qTop.hi,0)):'')+'.</p>';
+  else body+='<p class="note">تحقّق التحويل عند أعلى رصدة متعذّر: '+esc(qTop.why)+'. '
+    +'وهذا وارد: قراءة المقياس المقابلة قد تخرج عن النطاق المعتمد ١٠–١٦ م فلا يُستقرأ لها تصرف.</p>';
+
+  return panel('مرجع دنقلا الرأسى — Δdatum','حلّ الإزاحة من مزاوجة المرساة الحقلية بمتوسط نافذة مدارية',body,
+    'المرساة الحقلية: قراءة مقياس دنقلا ١٠٫١٠ م مقابل تصرف مقيس ١٢٧٫٣ مليون م³/يوم (نصف مايو ٢٠٢٤) — '
+    +'والمنحنى يعطى ١٢٧٫٨٣٥ عندها أى فارق ٠٫٤٢٪. '
+    +'صفر المقياس ٢١٠٫٦٠ م على مرجع محلى، ومناسيب DAHITI على جيويد EIGEN-6C4، فالإزاحة تُحلّ ولا تُفترض صفراً.');
+}
+
 function dongolaPanel(){
   var rows="", i, T=[[10,111.0],[11,null],[12,447.8],[13,null],[14,784.4],[15,null],[15.5,1101.3],[16,null]];
   for(i=0;i<T.length;i++){
@@ -5175,11 +5482,11 @@ function dongolaPanel(){
     +'<b>حدّان معلنان.</b> النطاق المعتمد <b>١٠٫٠٠–١٦٫٠٠ م</b> وخارجه تُرجع الدالة «لا قيمة» '
     +'بدل الاستقراء. و<b>منسوب انعدام التصريف الفعلى للشريحة الأولى ٩٫٣٤ م</b> لا ٨٫٥٠ '
     +'المذكورة كصفر مرجعى — فما بينهما تعطى الصيغة قيماً سالبة تُقصَّ إلى صفر.</div></div>'
-    +'<div class="banner info" style="margin-top:10px"><span>◉</span><div>'
-    +'<b>الربط بالألتيمترى:</b> صفر المقياس <b>٢١٠٫٦٠ م</b> فوق سطح البحر، '
-    +'فقراءة المقياس = المنسوب الجيودى − ٢١٠٫٦٠. '
-    +'والنطاق المعتمد يقابل منسوباً جيودياً <b>٢٢٠٫٦٠–٢٢٦٫٦٠ م</b> — '
-    +'وهذا يفتح الباب لتحويل سلسلة DAHITI عند دنقلا (48605) إلى تصرف مرصود.</div></div>',
+    +'<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
+    +'<b>الربط بالألتيمترى غير محسوم رأسياً بعد.</b> صفر المقياس <b>٢١٠٫٦٠ م</b> على مرجع رأسى محلى فى دنقلا، '
+    +'بينما DAHITI يستخدم مرجعه الرأسى الخاص. لذلك لا يجوز طرح ٢١٠٫٦٠ مباشرة من منسوب القمر. '
+    +'الصيغة الصحيحة مؤقتاً: <span dir="ltr"><b>H<sub>gauge</sub> = H<sub>DAHITI</sub> + Δdatum − 210.60</b></span>. '
+    +'ويظل Δdatum متغيراً تشخيصياً حتى يُثبَت محلياً؛ لا يُنقل إليه أى تصحيح من السد العالى أو مرجع آخر.</div></div>',
     'المصدر: نقاط جدول قطاع مياه النيل الحقلية. '
     +'<b>الثوابت النظرية <span dir="ltr">C=18.25 · m=1.88</span> أُسقطت</b> — '
     +'كانت تفترض مجرى قناة واحدة فتعطى أقل من الجدول بـ٣٦–٦٥٪.');
@@ -6113,6 +6420,16 @@ function trustRows(){
     verOk: "part",
     note:"نموذج جريان طبيعى · لا يرى الخزانات ولا السحب · الشكل والتوقيت أوثق من المقدار" });
 
+  /* ١ب. التصرف المرصود المشتقّ عند دنقلا */
+  var dv=(ST.rlv&&ST.rlv.data&&ST.rlv.data.dongola)?donDerived(ST.rlv.data.dongola.series):null;
+  R.push({ nm:"تصرف دنقلا المرصود المشتقّ", kind:"obs",
+    st: (dv&&dv.nQ>0)?("محمَّلة — "+dv.nQ+" قيمة"):"غير محمَّلة",
+    last: (dv&&dv.last)?dv.last.t:null,
+    age: (dv&&dv.last)?Math.round((Date.now()-new Date(dv.last.t).getTime())/86400000):null,
+    ver: (DON_DATUM!==null)?("مزاوجة شهرية · Δ="+nf(DON_DATUM,2)+" م"):"المرجع غير محلول",
+    verOk: (dv&&dv.nQ>0)?"yes":"na",
+    note:"منسوب مرصود × منحنى قطاع مياه النيل — مشتقّ لا مباشر · خارج ١٠–١٦ م لا قيمة" });
+
   /* ٢. المطر */
   R.push({ nm:"أمطار المنابع (Open-Meteo)", kind:"model",
     st: ST.rain?"محمَّلة":"غير محمَّلة",
@@ -6267,8 +6584,10 @@ function secTrust(){
       +'<b>تصديق قائم فعلاً — ناصر:</b> متوسط الفارق '+sgn(XN.mean,2)+' م على '+XN.n+' زوج.</div></div>';
 
   s+='<div class="banner danger" style="margin-top:12px"><span>⚑</span><div>'
-    +'<b>الثغرة الحاكمة التى لا يسدّها أى مصدر خارجى:</b> '
-    +'كل ما سبق منسوب أو نموذج. **لا قياس تصرف أرضى واحد داخل التطبيق**. '
+    +'<b>الثغرة الحاكمة — ضاقت ولم تُغلق:</b> '
+    +'دخلت الآن <b>سلسلة تصرف مرصود مشتقّ عند دنقلا</b> (منسوب مرصود × منحنى وزارى معتمد)، '
+    +'وهى أول تصرف فى التطبيق مصدره رصد لا نموذج. لكنها تبقى <b>مشتقّة لا مباشرة</b>: '
+    +'ولا يزال <b>لا قياس تصرف ميدانى مباشر (ADCP أو عدّاد تيار) داخل التطبيق</b>. '
     +'وقد فُحصت البدائل وسقطت: <b>GRDC</b> ينتهى عند ١٩٨٤ وشهرياً ويمنع إعادة النشر · '
     +'<b>GRRR</b> بلا CORS وينتهى ٢٠٢٣ · <b>الألتيمترى</b> يعطى منسوباً لا تصرفاً. '
     +'فرقم واحد صحيح من سجل الوزارة عند حلفا بتاريخه يفعل ما لا يفعله أى مصدر عالمى.</div></div>';
@@ -7239,12 +7558,14 @@ function rlvLoad(id){
     for(i=0;i<arr.length;i++){
       var w=arr[i];
       var lv=(w.water_level!==un&&w.water_level!==null)? w.water_level : w.wse;
+      var er=(w.error!==un&&w.error!==null)? w.error : w.wse_u;
       var tt=w.date||w.datetime;
       if(lv===un||lv===null||!tt) continue;
-      out.push({ t:String(tt).slice(0,10), v:Number(lv) });
+      out.push({ t:String(tt).slice(0,10), v:Number(lv), u:(er!==un&&er!==null&&!isNaN(er)?Number(er):null) });
     }
     out.sort(function(a,b){ return a.t<b.t? -1 : (a.t>b.t?1:0); });
     ST.rlv.data[id]={ series:out, at:Date.now() };
+    if(id==="dongola") donState(ST.rlv.data[id]);   /* حلّ Δdatum فور وصول سلسلة دنقلا */
     return rlvArch(id);
   }).then(function(){
     ST.rlv.loading=""; auditLog("جلب منسوب مجرى مرصود", rlvT(id).nm); render(); return true;
@@ -7319,7 +7640,7 @@ function secRlev(){
   var s='<div class="banner warn"><span>⚠</span><div>'
     +'<b>منسوب لا تصرف.</b> الألتيمترى يقيس ارتفاع سطح الماء، فيصلح للتحقق من '
     +'<b>الشكل والتوقيت</b> ولا يعطى تصرفاً. <b>ولا يحلّ مسألة المقياس</b> إلا بمنحنى تصريف معتمد '
-    +'(منسوب ↔ تصرف) لنفس الموضع — وعندها يتحوّل هذا المنسوب المرصود إلى تصرف مرصود حقيقى.'
+    +'(منسوب ↔ تصرف) لنفس الموضع — وعندها يتحوّل هذا المنسوب المرصود إلى <b>تصرف مرصود مشتق</b> — القمر يقيس المنسوب والمنحنى يحوّله إلى تصرف.'
     +'</div></div>';
   s=panel("رصد على المجرى","أول متغيّر مرصود فعلاً داخل التطبيق", sel+s,
     'المصدر: <b>DAHITI</b> — وداخل حوض النيل <b>٣٣٨ محطة افتراضية نهرية عامة</b> لا بحيرات فقط. '
@@ -7396,10 +7717,12 @@ function secRlev(){
         +'اختبار إشارة لا مقدار (روافد أخرى تؤثر أيضاً).</div></div>';
   }
 
+  if(ST.rlv.sel==="dongola"){ s+=dongolaDatumDiagPanel(D); s+=donMonthlyHtml(D); s+=donDerivedHtml(D); }
+
   s+=panel("ما الذى يفتحه هذا","الخطوة التالية إن توفّر منحنى التصريف",
     '<p class="note">بمنحنى تصريف معتمد لأى من هذه المواضع (منسوب ↔ تصرف) يتحوّل كل ما سبق إلى '
-    +'<b>سلسلة تصرف مرصودة</b> تُدخَل مباشرة فى قسم القياسات، فيُبنى منحنى تصحيح الانحياز من رصد حقيقى '
-    +'لا من متوسطات منشورة — وتنتهى الحاجة إلى المعايرة المرجعية التقديرية.</p>');
+    +'<b>سلسلة تصرف مرصود مشتق</b> تُستخدم أولاً للعرض والتحقق الموسمى والحجمى، ولا تدخل nudge أو التتبّع قبل اعتماد مرجعها الرأسى؛ وبعد التحقق يمكن أن تحل محل مرساة أخرى لا أن تُضاف إليها. '
+    +'ويظل منفصلاً عن المعايرة المرجعية المبنية على المتوسطات المنشورة إلى أن يثبت datum ويُختبر على حجم مستقل.</p>');
   return s;
 }
 
