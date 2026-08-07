@@ -83,12 +83,13 @@ h1,h2,h3{letter-spacing:-.3px}
 @media(max-width:820px){.mob-nav{display:flex}}
 
 .grid{display:grid;gap:15px}
+.grid.g6{grid-template-columns:repeat(6,1fr)}
 .grid.g5{grid-template-columns:repeat(5,1fr)}
 .grid.g4{grid-template-columns:repeat(4,1fr)}
 .grid.g3{grid-template-columns:repeat(3,1fr)}
 .grid.g2{grid-template-columns:repeat(2,1fr)}
-@media(max-width:1000px){.grid.g5{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:900px){.grid.g4,.grid.g5{grid-template-columns:repeat(2,1fr)}.grid.g3,.grid.g2{grid-template-columns:1fr}}
+@media(max-width:1000px){.grid.g5,.grid.g6{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:900px){.grid.g4,.grid.g5,.grid.g6{grid-template-columns:repeat(2,1fr)}.grid.g3,.grid.g2{grid-template-columns:1fr}}
 .kpi-card{background:var(--white);border:1px solid var(--line);box-shadow:var(--shadow);
   border-radius:14px;padding:14px;display:flex;gap:11px;align-items:flex-start}
 .kpi-icon{width:41px;height:41px;color:var(--lake-deep);background:#e8f0f1;border:1px solid #c8d9d9;
@@ -216,6 +217,7 @@ table.tb tr.hi td{background:#f2f7f4}
 @media(min-width:1700px){
   .content{max-width:1560px}
   .grid.g5{grid-template-columns:repeat(5,1fr)}
+  .grid.g6{grid-template-columns:repeat(6,1fr)}
 }
 </style>
 </head>
@@ -231,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.50</small>
+      <small id="buildtag">build 2.52</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -726,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.50";
+var BUILD = "2.52";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -3024,6 +3026,171 @@ function scenBar(){
   return s+'</div>';
 }
 
+/* =====================================================================
+   منحنى المنسوب–التخزين لبحيرة ناصر — منحنيان للمقارنة لا منحنى واحد
+   التصميمى: تقدير الوزارة قبل 1964 — 162 مليار م³ عند 182 م
+     (ميت 31.6 حتى 147 · حى 90.4 بين 147 و175 · حيّز فيضان ~40 حتى 182)
+   المُحدَّث: إعادة حساب من نموذج ارتفاعات رقمى بعد عقود من الإطماء —
+     ~142 مليار عند 182 م (فقد ~12% من السعة)
+   الاستيفاء خطى بين المعالم المنشورة — ليس منحنى الوزارة الرسمى.
+   ===================================================================== */
+var NASSER_CURVES=[
+  { id:"design", nm:"التصميمى (قبل الإطماء)", cls:"lake",
+    src:"تقدير MWRI قبل 1964 — 162 مليار م³ عند 182 م",
+    pts:[{h:85,v:0},{h:147,v:31.6},{h:175,v:122.0},{h:182,v:162.0}] },
+  { id:"silt",   nm:"المُحدَّث بالإطماء", cls:"sand",
+    src:"إعادة حساب من نموذج ارتفاعات رقمى — 142 مليار م³ عند 182 م",
+    pts:[{h:85,v:0},{h:147,v:25.0},{h:175,v:103.0},{h:182,v:142.0}] }
+];
+var NASSER_ZONES=[
+  { to:147, nm:"التخزين الميت", cls:"danger" },
+  { to:175, nm:"التخزين الحى", cls:"green" },
+  { to:182, nm:"حيّز الفيضان", cls:"sand" }
+];
+function nasserCurve(id){ var i; for(i=0;i<NASSER_CURVES.length;i++) if(NASSER_CURVES[i].id===id) return NASSER_CURVES[i]; return NASSER_CURVES[0]; }
+function nasserDatum(){
+  /* إزاحة المرجع الرأسى: مقياس السد العالى ناقص الألتيمترى، بالمتر.
+     صفر افتراضاً — ولا يُختلق لها رقم. تُدخَل عند توفر قراءة رسمية بتاريخها. */
+  var v=0;
+  try{ var t=localStorage.getItem("mwri_nasser_datum"); if(t!==null&&t!=="") v=parseFloat(t); }catch(e){}
+  if(isNaN(v)||v<-5||v>5) v=0;
+  return v;
+}
+function nasserH(hAlti){
+  /* المنسوب المصحَّح على مرجع المقياس */
+  if(hAlti===null||hAlti===undefined||isNaN(hAlti)) return null;
+  return hAlti + nasserDatum();
+}
+function nasserStore(h, id){
+  /* استيفاء خطى قطعى — يرجع مليار م³، وnull خارج مدى المعالم بلا استقراء */
+  if(h===null||h===undefined||isNaN(h)) return null;
+  var C=nasserCurve(id), P=C.pts, i;
+  if(h<P[0].h || h>P[P.length-1].h) return null;
+  for(i=0;i<P.length-1;i++){
+    if(h>=P[i].h && h<=P[i+1].h){
+      var f=(h-P[i].h)/(P[i+1].h-P[i].h);
+      return P[i].v + f*(P[i+1].v-P[i].v);
+    }
+  }
+  return null;
+}
+function nasserSlope(h, id){
+  /* مليار م³ لكل متر عند هذا المنسوب = المساحة المكافئة للمسطح */
+  if(h===null||h===undefined||isNaN(h)) return null;
+  var C=nasserCurve(id), P=C.pts, i;
+  if(h<P[0].h || h>P[P.length-1].h) return null;
+  for(i=0;i<P.length-1;i++)
+    if(h>=P[i].h && h<=P[i+1].h) return (P[i+1].v-P[i].v)/(P[i+1].h-P[i].h);
+  return null;
+}
+function nasserZone(h){
+  if(h===null||h===undefined||isNaN(h)) return null;
+  var i; for(i=0;i<NASSER_ZONES.length;i++) if(h<NASSER_ZONES[i].to) return NASSER_ZONES[i];
+  return { to:999, nm:"فوق الحد الأقصى 182 م", cls:"danger" };
+}
+function nasserNow(){
+  /* الحالة الحالية من آخر رصدة ألتيمترى — بلا جلب ولا اختلاق */
+  var D=ST.alti.data["nasser"];
+  if(!D||!D.series||!D.series.length) return null;
+  var L=D.series[D.series.length-1], h=nasserH(L.v);
+  var out={ t:L.t, hAlti:L.v, h:h, off:nasserDatum(), zone:nasserZone(h), v:{}, slope:{} }, i;
+  for(i=0;i<NASSER_CURVES.length;i++){
+    out.v[NASSER_CURVES[i].id]=nasserStore(h, NASSER_CURVES[i].id);
+    out.slope[NASSER_CURVES[i].id]=nasserSlope(h, NASSER_CURVES[i].id);
+  }
+  out.age=Math.max(0, Math.floor(Date.now()/864e5) - altiDayNum(L.t));
+  return out;
+}
+function nasserDelta(days){
+  /* تغيّر التخزين بين آخر رصدة وأقرب رصدة قبلها بـdays يوماً.
+     إزاحة المرجع تُلغى بالطرح داخل نفس القطعة الخطية — فهذا الرقم
+     شبه غير حسّاس لخطأ المرجع، بخلاف التخزين المطلق. */
+  var A=altiStats("nasser"); if(!A) return null;
+  var d=(days===90)?A.d90:((days===365)?A.d365:A.d30);
+  if(d===null||d===undefined) return null;
+  var h2=nasserH(A.last.v), h1=h2-d, out={ dh:d, days:days, v:{} }, i, a, b;
+  for(i=0;i<NASSER_CURVES.length;i++){
+    a=nasserStore(h1, NASSER_CURVES[i].id); b=nasserStore(h2, NASSER_CURVES[i].id);
+    out.v[NASSER_CURVES[i].id]=(a===null||b===null)?null:(b-a);
+  }
+  return out;
+}
+function sgn(x, dg){ if(x===null||x===undefined||isNaN(x)) return "—"; return (x>0?"+":"")+nf(x,dg); }
+
+function nasserStorePanel(){
+  var NS=nasserNow(); if(!NS) return "";
+  var rows="", i, C, dS30=nasserDelta(30), dS90=nasserDelta(90), dS365=nasserDelta(365);
+  for(i=0;i<NASSER_CURVES.length;i++){
+    C=NASSER_CURVES[i];
+    var v=NS.v[C.id], sl=NS.slope[C.id], cap=C.pts[C.pts.length-1].v;
+    rows+='<tr><td><b>'+esc(C.nm)+'</b><div style="font-size:9px;color:var(--muted)">'+esc(C.src)+'</div></td>'
+      +'<td class="num"><b>'+(v!==null?nf(v,1):"—")+'</b></td>'
+      +'<td class="num">'+(v!==null?nf(v/cap*100,0)+"%":"—")+'</td>'
+      +'<td class="num">'+(sl!==null?nf(sl*1000,0):"—")+'</td>'
+      +'<td class="num">'+(dS30&&dS30.v[C.id]!==null?sgn(dS30.v[C.id],2):"—")+'</td>'
+      +'<td class="num">'+(dS90&&dS90.v[C.id]!==null?sgn(dS90.v[C.id],2):"—")+'</td>'
+      +'<td class="num">'+(dS365&&dS365.v[C.id]!==null?sgn(dS365.v[C.id],2):"—")+'</td></tr>';
+  }
+  var inner='<div class="grid g4">'
+    +kpi("≋","","المنسوب المُستخدَم", nf(NS.h,2),"م",
+         NS.off===0?("ألتيمترى خام · "+NS.t):("مصحَّح "+sgn(NS.off,2)+" م · "+NS.t))
+    +kpi("▣","","التخزين — تصميمى", NS.v.design!==null?nf(NS.v.design,1):"—","مليار م³", "استيفاء خطى")
+    +kpi("◑","sand","التخزين — بعد الإطماء", NS.v.silt!==null?nf(NS.v.silt,1):"—","مليار م³","أقل بنحو ١٢٪")
+    +kpi("◈", NS.zone.cls, "الحيّز التشغيلى", esc(NS.zone.nm),"", "ميت <147 · حى <175 · فيضان <182")
+    +'</div>';
+  inner+='<div class="tb-wrap" style="margin-top:15px"><table class="tb"><thead><tr>'
+    +'<th>المنحنى</th><th>التخزين (مليار م³)</th><th>٪ من السعة</th><th>المسطح المكافئ (كم²)</th>'
+    +'<th>Δ٣٠ يوماً</th><th>Δ٩٠ يوماً</th><th>Δسنة</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+  inner+='<div class="ctrl" style="margin-top:14px"><label>إزاحة المرجع الرأسى (مقياس السد العالى − الألتيمترى، بالمتر):</label>'
+    +'<input type="number" step="0.01" id="nas-off" value="'+nasserDatum()+'" style="width:110px">'
+    +'<button class="btn solid" id="nas-off-save">حفظ</button>'
+    +'<button class="btn mini" id="nas-off-zero">تصفير</button></div>';
+  inner+='<div class="banner warn" style="margin-top:12px"><span>⚠</span><div>'
+    +'<b>الحدّ الحاكم — المرجع الرأسى.</b> الألتيمترى يقيس فوق الجيود، ومقياس السد العالى على مرجع محلى. '
+    +'المسطح هنا نحو <b>'+(NS.slope.design!==null?nf(NS.slope.design*1000,0):"—")+' كم²</b>، '
+    +'فكل <b>١٠ سم</b> خطأ فى المرجع تساوى نحو <b>'
+    +(NS.slope.design!==null?nf(NS.slope.design*100,0):"—")+' مليون م³</b>. '
+    +'<b>قراءة رسمية واحدة بتاريخها</b> تكفى لحساب الإزاحة نهائياً — وحتى إدخالها فأرقام التخزين المطلق تُقرأ كتقدير لا كرصد. '
+    +'أما <b>أعمدة Δ</b> فسليمة بلا إزاحة لأن الخطأ الثابت يُلغى بالطرح.</div></div>';
+  inner+='<div class="banner info" style="margin-top:10px"><span>ℹ</span><div>'
+    +'<b>لماذا منحنيان.</b> المنحنى التصميمى وضعته الوزارة قبل 1964 والإطماء منذها التهم جزءاً من السعة، '
+    +'فإعادة الحساب من نموذج ارتفاعات رقمى تعطى نحو ١٤٢ مليار م³ عند ١٨٢ م بدل ١٦٢ — '
+    +'<b>أى أن التصميمى يبالغ فى التخزين، والانحياز معروف الاتجاه.</b> '
+    +'الحقيقة على الأرجح بينهما وأقرب للمُحدَّث، ولا يحسمها إلا <b>جدول السعة الرسمى المعمول به حالياً</b> — '
+    +'وبرفعه يُستبدل المنحنيان وتصير الأرقام رسمية. '
+    +'والاستيفاء بيننا خطى بين المعالم المنشورة، فميل المسطح يقفز عند ١٤٧ و١٧٥ م — أثر طريقة الاستيفاء لا فيزياء البحيرة.</div></div>';
+  return panel("بحيرة ناصر — المنسوب إلى تخزين","منحنيان للمقارنة: التصميمى والمُحدَّث بالإطماء", inner,
+    'التخزين محسوب من <b>رصدة ألتيمترى واحدة</b> عمرها '+nf(NS.age,0)+' يوماً '
+    +'(رصد '+esc(NS.t)+'). '+stampPill("obs")+' للمنسوب و'+stampPill("model")+' للتخزين المشتقّ منه.');
+}
+
+function nasserLevelCard(){
+  /* منسوب بحيرة ناصر المرصود بالألتيمترى (DAHITI 210) — رقم مرصود لا مُنمذَج.
+     الرصدات متباعدة بطبيعة المدار، فتاريخ الرصد وعمره جزء لا يتجزأ من الرقم. */
+  var D = ST.alti.data["nasser"], big = "\u2014", sub = "", cls = "";
+  if(D && D.series && D.series.length){
+    var L = D.series[D.series.length-1];
+    var age = Math.floor(Date.now()/864e5) - altiDayNum(L.t);
+    if(age < 0) age = 0;
+    big = nf(L.v, 2);
+    sub = "\u0631\u0635\u062f " + L.t + " \u00b7 \u0645\u0646\u0630 " + nf(age,0) + " \u064a\u0648\u0645\u0627\u064b";
+    if(L.u !== null && L.u !== undefined && !isNaN(L.u)) sub += " \u00b7 \u00b1" + nf(L.u,2) + " \u0645";
+    if(age > 45) cls = "sand";
+  } else if(ST.alti.loading){
+    sub = "\u062c\u0627\u0631\u064d \u0627\u0644\u062c\u0644\u0628 \u0645\u0646 DAHITI\u2026";
+  } else if(ST.alti.keyOk === false){
+    sub = "\u0628\u0644\u0627 \u0645\u0641\u062a\u0627\u062d DAHITI \u2014 \u0623\u062f\u062e\u0644\u0647 \u0641\u064a \u0642\u0633\u0645 \u0627\u0644\u0623\u0644\u062a\u064a\u0645\u062a\u0631\u0649";
+  } else {
+    sub = "\u0644\u0645 \u062a\u064f\u062c\u0644\u064e\u0628 \u0628\u0639\u062f \u2014 \u0627\u0641\u062a\u062d \u0642\u0633\u0645 \u0627\u0644\u0623\u0644\u062a\u064a\u0645\u062a\u0631\u0649";
+  }
+  return kpi("\u25ce", cls, "\u0645\u0646\u0633\u0648\u0628 \u0628\u062d\u064a\u0631\u0629 \u0646\u0627\u0635\u0631", big, "\u0645", sub);
+}
+function altiBootNasser(){
+  /* جلب صامت لمرة واحدة حتى تُملأ بطاقة غرفة الفيضان دون فتح قسم الألتيمترى */
+  if(ST.alti.data["nasser"] || ST.alti.loading) return;
+  try { altiLoad("nasser"); } catch(e){}
+}
+
 /* ---- 1. غرفة الفيضان ---- */
 function secCommand(){
   if(!ST.q) return panel("مركز قيادة الموجة","جارٍ تحميل البيانات الحية", skel(6));
@@ -3034,13 +3201,32 @@ function secCommand(){
   var s='<div class="banner '+(lvl.cls==="ok"?"ok":(lvl.cls==="danger"?"danger":"warn"))+'">'
     +'<span>'+(lvl.k>=2?"⚠":"✓")+'</span><div>'+esc(operationalSentence()||"")+'</div></div>';
 
-  s+='<div class="grid g5">'
+  s+='<div class="grid g6">'
     +kpi("≋","","الديم — وارد الهضبة", nf(cur("eldiem"),0),"م³/ث","النيل الأزرق عند الحدود")
     +kpi("⑂","","الرئيسى — الخرطوم", nf(cur("khartoum"),0),"م³/ث","بعد الملتقى")
     +kpi("◔","sand","نهر عطبرة", nf(cur("atbara"),0),"م³/ث","الرافد الموسمى")
     +kpi("▣", lvl.k>=2?"danger":"green","الوارد لبحيرة ناصر", nf(qH,0),"م³/ث","وادى حلفا")
     +kpi("☂","green","أمطار المنابع — قادم ٧ي", ri?nf(ri.next7,0):"—","مم", ri?("ماضٍ "+nf(ri.past7,0)+" مم"):"—")
+    +nasserLevelCard()
     +'</div>';
+
+  var NS=nasserNow();
+  if(NS && NS.v.design!==null){
+    var dS=nasserDelta(30);
+    s+='<div class="banner info"><span>▣</span><div>'
+      +'<b>التخزين المقابل لمنسوب ناصر '+nf(NS.h,2)+' م:</b> '
+      +'<b>'+nf(NS.v.design,1)+'</b> مليار م³ بالمنحنى التصميمى · '
+      +(NS.v.silt!==null?('<b>'+nf(NS.v.silt,1)+'</b> مليار بالمنحنى المُحدَّث بالإطماء'):'—')
+      +' · الحيّز: <span class="pill '+NS.zone.cls+'">'+esc(NS.zone.nm)+'</span>'
+      +(dS&&dS.v.design!==null?(' · تغيّر ٣٠ يوماً <b>'+sgn(dS.v.design,1)+'</b> مليار م³'):'')
+      +'<div style="margin-top:5px">رصد '+esc(NS.t)+' · منذ '+nf(NS.age,0)+' يوماً · '
+      +'الرقم <b>تقديرى</b>: منحنى مستوفى خطياً على معالم منشورة، '
+      +(NS.off===0
+        ? 'و<b>بلا تصحيح مرجع رأسى</b> — كل ١٠ سم فرق بين مرجع الألتيمترى ومقياس السد العالى تساوى نحو ٥٠٠ مليون م³. أدخل قراءة رسمية واحدة فى قسم الألتيمترى فينتهى هذا الخطأ.'
+        : ('ومصحَّح بإزاحة مرجع '+sgn(NS.off,2)+' م.'))
+      +' <b>تغيّر التخزين</b> أعلاه شبه غير حسّاس لهذا الخطأ لأن الإزاحة تُلغى بالطرح.</div>'
+      +'</div></div>';
+  }
 
   if(ST.cal.on && ST.cal.model){
     var cH=calQ("halfa",qH), cD=calQ("eldiem",cur("eldiem")), fH=calFactor("halfa");
@@ -5137,6 +5323,7 @@ function secAlti(){
         +kpi("⊙","lake","عدد الأرصاد", A.n,"رصدة","منذ "+esc(A.from))
         +'</div>';
       s+=stampPill("obs")+' <span style="font-size:11px;color:var(--muted)">كل الأرقام أعلاه رصد ألتيمترى مباشر — لا نمذجة ولا استيفاء لدينا</span>';
+      if(T.id==="nasser") s+=nasserStorePanel();
       if(T.id==="gerd")
         s+='<div class="banner info" style="margin-top:12px"><span>ℹ</span><div>'
           +'<b>قراءة المؤشر:</b> الهبوط خارج موسم الفيضان يعنى تمريراً (توربينات/مفيض) أكبر من الوارد، '
@@ -6762,6 +6949,23 @@ function bindControls(){
     altiLoad(ST.alti.sel);
   };
 
+  el=$("nas-off-save"); if(el) el.onclick=function(){
+    var raw=$("nas-off")? String($("nas-off").value||"").trim() : "";
+    var v=parseFloat(raw);
+    if(raw===""||isNaN(v)||v<-5||v>5){
+      netErr("إزاحة مرجع غير مقبولة", new Error("أدخل رقماً بالمتر بين -5 و+5 — والإزاحة المتوقعة أقل من متر"));
+      return;
+    }
+    try{ localStorage.setItem("mwri_nasser_datum", String(v)); }catch(e){}
+    auditLog("ضبط إزاحة مرجع ناصر", "إزاحة " + v + " م — مقياس السد العالى ناقص الألتيمترى");
+    render();
+  };
+  el=$("nas-off-zero"); if(el) el.onclick=function(){
+    try{ localStorage.removeItem("mwri_nasser_datum"); }catch(e){}
+    auditLog("تصفير إزاحة مرجع ناصر", "عودة للمنسوب الخام بلا تصحيح");
+    render();
+  };
+
   el=$("dam-sel"); if(el) el.onchange=function(){ ST.dam.sel=this.value; render(); };
   el=$("dam-alti"); if(el) el.onclick=function(){ altiLoad(resv(ST.dam.sel).altiId); };
   el=$("dam-nat"); if(el) el.onclick=function(){ damLoadNatural(); };
@@ -7098,6 +7302,7 @@ function boot(){
     publish();
     /* الأرشيف فى الخلفية — هو مصدر العتبات الافتراضية */
     if(ST.q) loadClimatology("halfa", true).then(function(){ publish(); }).catch(function(){});
+    altiBootNasser();
   });
 }
 
