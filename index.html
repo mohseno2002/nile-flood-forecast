@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.74</small>
+      <small id="buildtag">build 2.77</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.74";
+var BUILD = "2.77";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -5257,6 +5257,81 @@ function donDerived(series){
   return { rows:out, n:out.length, nQ:got.length, nOut:nOut,
     last:(got.length?got[got.length-1]:null), max:mx, sigma:sg };
 }
+/* ══ التحقق المرجعى: النموذج مقابل التصرف المرصود المشتقّ عند دنقلا ══
+   أول قياس دقة حقيقى فى التطبيق: كل الطبقات السابقة كانت تقارن النموذج بنفسه
+   أو بمنسوب، وهنا يُقارَن بتصرف مصدره رصد. مرجع الحقيقة هو المشتقّ لا النموذج. */
+function donSkill(D){
+  var A=ST.rlv.arch&&ST.rlv.arch.dongola?ST.rlv.arch.dongola:null;
+  var X=donDerived((D&&D.series)?D.series:null);
+  if(!A||!A.t||!X) return null;
+  var map={}, i;
+  for(i=0;i<A.t.length;i++){
+    var q=A.q?A.q[i]:null;
+    if(q!==null&&q!==undefined&&!isNaN(q)) map[A.t[i]]=q;
+  }
+  var O=[], S=[], T=[], lo=null, hi=null;
+  for(i=0;i<X.rows.length;i++){
+    var r=X.rows[i];
+    if(r.q===null) continue;
+    var m=map[r.t];
+    if(m===undefined) continue;
+    O.push(r.q); S.push(m); T.push(r.t);
+    if(lo===null||r.t<lo) lo=r.t;
+    if(hi===null||r.t>hi) hi=r.t;
+  }
+  if(O.length<3) return { n:O.length, few:true };
+  var mt=FIT.metrics(O,S,0,O.length-1);
+  var pe=FIT.peakErr(O,S,T,0,O.length-1);
+  var so=0, ss=0;
+  for(i=0;i<O.length;i++){ so+=O[i]; ss+=S[i]; }
+  return { n:O.length, m:mt, peak:pe, from:lo, to:hi,
+    mObs:so/O.length, mSim:ss/S.length,
+    ratio:(so>0)?(ss/so):null, O:O, S:S, T:T };
+}
+function donSkillHtml(D){
+  var K=donSkill(D);
+  if(!K) return "";
+  if(K.few) return panel('التحقق المرجعى — النموذج مقابل الرصد','GloFAS عند دنقلا مقابل التصرف المرصود المشتقّ',
+    '<div class="banner warn"><span>⚠</span><div><b>أزواج قليلة ('+K.n+').</b> '
+    +'يلزم جلب أرشيف التصرف لنفس المحطة قبل المقارنة — اضغط زر الجلب مرة أخرى.</div></div>',
+    'المقارنة تحتاج تطابق التاريخ بين رصدة مدارية محوَّلة وقيمة نموذج لنفس اليوم.');
+  var m=K.m, g=(m&&m.KGE!==null)?FIT.grade(m.KGE):null;
+  var cls=(K.ratio!==null&&K.ratio>2)?'danger':((K.ratio!==null&&K.ratio>1.3)?'sand':'green');
+  var body='<div class="grid g4">'
+    +kpi('n','lake','أزواج مقارنة',K.n,'يوماً',esc(K.from||'—')+' ← '+esc(K.to||'—'))
+    +kpi('×',cls,'مبالغة النموذج',(K.ratio!==null?nf(K.ratio,2):'—'),'×','متوسط النموذج ÷ المرصود')
+    +kpi('◉','lake','متوسط مرصود مشتقّ',nf(K.mObs,0),'م³/ث','مصدره رصد')
+    +kpi('◌',cls,'متوسط النموذج',nf(K.mSim,0),'م³/ث','GloFAS الخام')
+    +'</div>';
+  body+='<div class="grid g4" style="margin-top:12px">'
+    +kpi('r','','الارتباط',(m?nf(m.r,3):'—'),'','الشكل والتوقيت')
+    +kpi('K',(g?esc(g.cls):''),'KGE',(m?nf(m.KGE,3):'—'),'',(g?esc(g.g):'—'))
+    +kpi('N','','NSE',(m?nf(m.NSE,3):'—'),'','دون الصفر: المتوسط أفضل')
+    +kpi('%','','الانحياز',(m?sgn(m.PBIAS,1):'—'),'٪','موجب = النموذج أعلى')
+    +'</div>';
+  body+='<div class="banner info" style="margin-top:12px"><span>ℹ</span><div>'
+    +'<b>هذا أول قياس دقة فى التطبيق.</b> كل ما سبقه كان يقارن النموذج بنفسه (ثبات) '
+    +'أو بمنسوب مرصود (شكل). هنا مرجع الحقيقة <b>تصرف مصدره رصد</b>، '
+    +'فالأرقام أعلاه تصف <b>خطأ النموذج</b> لا اتفاقه مع ذاته.</div></div>';
+  if(m&&K.ratio!==null&&K.ratio>1.3)
+    body+='<div class="banner danger" style="margin-top:10px"><span>⛔</span><div>'
+      +'<b>المقدار مبالغ '+nf(K.ratio,2)+'×</b> بينما الارتباط '+nf(m.r,3)+'. '
+      +'أى أن النموذج يصيب <b>الشكل والتوقيت</b> ويخطئ <b>المقدار</b> — '
+      +'وهو نفس ما أظهرته المقارنة مع GRRR والمتوسطات المنشورة، لكنه هنا <b>مقيس عند عقدة بعينها</b> '
+      +'لا مستنتَج من متوسطات. فلا تُقرأ الأرقام المطلقة للنموذج عند دنقلا بلا معايرة.</div></div>';
+  else if(m)
+    body+='<div class="banner ok" style="margin-top:10px"><span>✓</span><div>'
+      +'<b>المقدار داخل ٣٠٪</b> من المرصود المشتقّ — نتيجة أفضل مما تشير إليه المقارنات غير المباشرة عند حلفا.</div></div>';
+  if(K.peak)
+    body+='<p class="note">الذروة داخل فترة المقارنة: المرصودة فى '+esc(K.peak.tObs)
+      +' والنموذجية فى '+esc(K.peak.tSim)+' — فارق التوقيت <b>'+K.peak.dtDays
+      +'</b> يوماً وفارق المقدار <b>'+sgn(K.peak.dQpct,1)+'٪</b>. '
+      +'وتُقرأ بتحفّظ: العيّنة أيام مرور مدارى متباعدة فقد لا تلتقط يوم الذروة الحقيقى.</p>';
+  return panel('التحقق المرجعى — النموذج مقابل الرصد','GloFAS عند دنقلا مقابل التصرف المرصود المشتقّ',body,
+    'المقارنة على أيام المرور المدارى وحدها ('+K.n+' يوماً)، وليست سلسلة يومية متصلة. '
+    +'ولا تُحمَّل نتيجتها على محطة أخرى: الانحياز يختلف من عقدة لأخرى كما أظهرت معاملات المعايرة.');
+}
+
 function donDerivedHtml(D){
   var S=(D&&D.series)?D.series:null;
   var X=donDerived(S);
@@ -5280,14 +5355,37 @@ function donDerivedHtml(D){
   body+='<div class="banner info" style="margin-top:12px"><span>ℹ</span><div>'
     +'<b>تصرف مرصود مشتقّ — لا قياس مباشر.</b> القمر قاس <b>منسوباً</b>، ومنحنى قطاع مياه النيل هو الذى حوّله إلى تصرف. '
     +'فترتيبه فى الثقة: قياس ميدانى مباشر ← <b>تصرف دنقلا المرصود المشتقّ</b> ← معايرة مبنية على قياسات ← GloFAS الخام. '
-    +'وكل قيمة تُعرض بحدّيها من إزاحة ±'+nf(X.sigma,3)+' م، ولا يُستقرأ خارج ١٠٫٠٠–١٦٫٠٠ م.</div></div>';
+    +'وكل قيمة تُعرض بحدّيها من إزاحة ±'+nf(X.sigma,3)+' م، ولا يُستقرأ خارج ١٠٫٠٠–١٦٫٠٠ م. '
+    +'<b>وللقيمة المفردة يتّسع الشريط:</b> ضجيج المرور المدارى الواحد يضيف نحو '
+    +'±'+nf(0.11*168.35*1e6/86400,0)+' م³/ث فوق حدّ الإزاحة — فقيمة يوم بعينه تُقرأ بهامش أوسع من قيمة متوسط.</div></div>';
+  /* حارس إغلاق الحجم: متوسط السلسلة المشتقّة يجب ألا يتجاوز مدى وارد حلفا المقيس.
+     تجاوزه دليل على انحياز فى الطبقة نفسها لا على سوء النموذج. */
+  var mq=0, cq=0, iq;
+  for(iq=0;iq<X.rows.length;iq++) if(X.rows[iq].q!==null){ mq+=X.rows[iq].q; cq++; }
+  var meanQ=cq?mq/cq:null, bcm=(meanQ!==null)?(meanQ*31.5576e6/1e9):null;
+  if(bcm!==null){
+    var vOk=(bcm>=45&&bcm<=115);
+    body+='<div class="banner '+(vOk?'ok':'danger')+'" style="margin-top:10px"><span>'+(vOk?'✓':'⛔')+'</span><div>'
+      +'<b>إغلاق الحجم:</b> متوسط السلسلة <b>'+nf(meanQ,0)+' م³/ث</b> يكافئ '
+      +'<b>'+nf(bcm,1)+' مليار م³/سنة</b>. '
+      +(vOk
+        ? 'داخل مدى وارد حلفا المقيس (٥٢٫٤ إلى ١٠٨٫٤ مليار) بعد إضافة فواقد المقطع الصحراوى — فالمقياس المطلق معقول.'
+        : '<b>خارج مدى وارد حلفا المقيس تماماً</b> (٥٢٫٤ · ٦٩٫٨ · ١٠٨٫٤ مليار من سجل الوزارة، والطبيعى ٨٤). '
+          +'ولا يفسّره Δ: جعله أكثر سالبية بالقدر اللازم يناقض القراءة الحقلية المباشرة ١٠٫١٠ م. '
+          +'فالأرجح <b>انحياز متغيّر مع المنسوب</b> — إزاحة مُعايَرة على التحاريق (مارس–يونيو) لا تصلح بالضرورة عند الفيضان. '
+          +'وهذا نفس درس استحالة معامل معايرة واحد. '
+          +'<b>القيم المطلقة للفيضان تُقرأ كحدّ أعلى حتى تصل متوسطات المقياس لأغسطس–أكتوبر.</b>')
+      +'</div></div>';
+  }
   body+='<div class="tb-wrap" style="margin-top:12px"><table class="tb"><thead><tr>'
     +'<th>التاريخ</th><th>DAHITI (م)</th><th>قراءة المقياس (م)</th><th>تصرف (م³/ث)</th><th>المدى</th><th></th>'
     +'</tr></thead><tbody>'+tr+'</tbody></table></div>'
     +'<p class="note">آخر ١٢ رصدة من '+X.n+'. الحدّان من إزاحة المرجع وحدها ولا يشملان عدم يقين المنحنى نفسه ولا الانحراف الهيدروليكى بين ساقَى الصعود والهبوط (٨–١٥٪).</p>';
   return panel('سلسلة التصرف المرصود المشتقّ — دنقلا','منسوب DAHITI ← إزاحة المرجع ← منحنى قطاع مياه النيل',body,
-    'أول سلسلة تصرف فى التطبيق مصدرها رصد لا نموذج. تُقرأ للفيضان أوثق منها للتحاريق: '
-    +'عند التحاريق تخرج بعض القراءات دون ١٠٫٠٠ م فتُرَدّ بلا قيمة.');
+    'أول سلسلة تصرف فى التطبيق مصدرها رصد لا نموذج. '
+    +'<b>التغطية أفضل عند الفيضان</b> (بعض قراءات التحاريق تخرج دون ١٠٫٠٠ م فتُرَدّ بلا قيمة)، '
+    +'لكن <b>الدقة أفضل عند التحاريق</b>: الإزاحة مُعايَرة على مارس–يونيو، '
+    +'وحارس إغلاق الحجم يشكّ فى القيم العالية تحديداً. فالكثرة والدقة هنا فى اتجاهين متعاكسين.');
 }
 
 /* المزاوجة الشهرية: أربعة متوسطات مقياس حقلية مقابل متوسطات مدارية لنفس الشهر.
@@ -7717,7 +7815,7 @@ function secRlev(){
         +'اختبار إشارة لا مقدار (روافد أخرى تؤثر أيضاً).</div></div>';
   }
 
-  if(ST.rlv.sel==="dongola"){ s+=dongolaDatumDiagPanel(D); s+=donMonthlyHtml(D); s+=donDerivedHtml(D); }
+  if(ST.rlv.sel==="dongola"){ s+=dongolaDatumDiagPanel(D); s+=donMonthlyHtml(D); s+=donDerivedHtml(D); s+=donSkillHtml(D); }
 
   s+=panel("ما الذى يفتحه هذا","الخطوة التالية إن توفّر منحنى التصريف",
     '<p class="note">بمنحنى تصريف معتمد لأى من هذه المواضع (منسوب ↔ تصرف) يتحوّل كل ما سبق إلى '
