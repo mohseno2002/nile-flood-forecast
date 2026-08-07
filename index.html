@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.56</small>
+      <small id="buildtag">build 2.57</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.56";
+var BUILD = "2.57";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -3274,6 +3274,20 @@ function secCommand(){
     +lakesNetCard()
     +'</div>';
 
+  var opR=opsShare("rose",30), opJ=opsShare("jebel",30);
+  var opBits=[];
+  if(opR && !opR.noQ && Math.abs(opR.pct)>=5)
+    opBits.push('<b>الروصيرص</b> '+sgn(opR.e.q,0)+' م³/ث ('+sgn(opR.pct,0)+'٪ من الديم)');
+  if(opJ && !opJ.noQ && Math.abs(opJ.pct)>=5)
+    opBits.push('<b>جبل أولياء</b> '+sgn(opJ.e.q,0)+' م³/ث ('+sgn(opJ.pct,0)+'٪ من الأبيض)');
+  if(opBits.length)
+    s+='<div class="banner warn"><span>⚑</span><div>'
+      +'<b>أثر تشغيل خزانات السودان خلال ٣٠ يوماً:</b> '+opBits.join(' · ')
+      +'<div style="margin-top:5px">الموجب احتجاز والسالب إطلاق فوق الوارد. '
+      +'<b>هذا القدر لا يراه GloFAS إطلاقاً</b> — تقدير من المنسوب المرصود × المسطح، '
+      +'مؤشر أثر لا تصحيح، ولا يُطرح من أى رقم فى اللوحة. التفصيل وحدود المسطح فى الألتيمترى ← مصدر ثانٍ NASA.</div>'
+      +'</div></div>';
+
   var GS=gerdNow();
   if(GS){
     var dG30=gerdDelta(30);
@@ -5493,6 +5507,112 @@ function gwmWorkerHint(){
     +'والتعبير النمطى يقصر الوسيط على ملفات GWM وحدها فلا يصير وسيطاً مفتوحاً.'
     +'</div></div>';
 }
+/* =====================================================================
+   أثر تشغيل الخزانات السودانية — الروصيرص وجبل أولياء
+   المبدأ: GloFAS نموذج جريان طبيعى لا يرى هذين الخزانين إطلاقاً.
+   والألتيمترى يرى منسوبهما. فتغيّر المنسوب × المسطح = حجم يُحتجَز أو يُطلَق،
+   وقسمته على الزمن تعطى **تصرفاً مكافئاً** يقارَن بتصرف النهر المُنمذَج.
+   لا منحنى تخزين ولا مرجع رأسى مطلوبان — لأن الحساب على الفرق لا القيمة.
+   الحدّ الحاكم: المسطح نفسه — يتغيّر مع المنسوب، والمعلن نطاق لا رقم.
+   ===================================================================== */
+var OPS_RES = [
+  { id:"rose",  nm:"خزان الروصيرص", gwm:"rose", st:"eldiem", stNm:"الديم (الأزرق)",
+    area:565, aLo:290, aHi:565,
+    aSrc:"٢٩٠ كم² قبل التعلية و٥٦٥ بعدها (تعلية ٢٠١٢، السعة ٣٫٠ ← ٧٫٤ مليار م³)",
+    note:"منسوب التشغيل ٤٦٧ م أثناء إطاحة الطمى (١٥ يونيو–١٥ سبتمبر) ثم يُملأ حتى ٤٩٠ م بنوفمبر — فالسحب الصيفى سلوك مُخطَّط لا شذوذ." },
+  { id:"jebel", nm:"خزان جبل أولياء", gwm:"jebel", st:"jaulia", stNm:"جبل أولياء (الأبيض)",
+    area:1246, aLo:600, aHi:1500,
+    aSrc:"١٬٢٤٦ كم² (خالد ١٩٩٠) ضمن نطاق منشور ٦٠٠–١٥٠٠ كم²",
+    note:"خزان ضحل جداً (عمق متوسط ~٢٫٣ م) فمسطحه يتغيّر بشدة مع المنسوب — وهذا أكبر مصدر لعدم اليقين هنا." }
+];
+function opsRes(id){ var i; for(i=0;i<OPS_RES.length;i++) if(OPS_RES[i].id===id) return OPS_RES[i]; return null; }
+function opsArea(R){
+  var v=R.area;
+  try{ var t=localStorage.getItem("mwri_ops_area_"+R.id); if(t!==null&&t!==""){ var p=parseFloat(t); if(!isNaN(p)&&p>=50&&p<=5000) v=p; } }catch(e){}
+  return v;
+}
+function opsEquiv(id, days){
+  /* التصرف المكافئ = المسطح × تغيّر المنسوب ÷ الزمن
+     موجب = احتجاز (الخزان يسحب من النهر) · سالب = إطلاق فوق الوارد */
+  var R=opsRes(id); if(!R) return null;
+  var D=ST.gwm.data[R.gwm];
+  if(!D||!D.series||D.series.length<2) return { few:true };
+  var S=D.series, last=S[S.length-1], tn=altiDayNum(last.t), i, best=null, bd=1e9;
+  for(i=0;i<S.length-1;i++){
+    var dd=Math.abs((tn-altiDayNum(S[i].t))-days);
+    if(dd<bd){ bd=dd; best=S[i]; }
+  }
+  if(!best) return { few:true };
+  var dt=tn-altiDayNum(best.t);
+  if(dt<4 || dt>75) return { span:true, dt:dt };     /* نفس حرّاس قسم الخزانات */
+  var dh=last.v-best.v;
+  function q(a){ return a*1e6*dh/(dt*86400); }        /* كم²→م² ثم م³/ث */
+  var A=opsArea(R);
+  return { few:false, span:false, dh:dh, dt:dt, t0:best.t, t1:last.t,
+           area:A, q:q(A), qLo:q(R.aLo), qHi:q(R.aHi),
+           dV:A*1e6*dh/1e9 };                          /* مليار م³ */
+}
+function opsShare(id, days){
+  /* نسبة التصرف المكافئ إلى تصرف النهر المُنمذَج عند المحطة المعنية */
+  var R=opsRes(id), E=opsEquiv(id, days||30);
+  if(!R||!E||E.few||E.span) return null;
+  var Q=cur(R.st);
+  if(Q===null||!(Q>0)) return { noQ:true, e:E };
+  return { noQ:false, e:E, Q:Q, pct:E.q/Q*100 };
+}
+function opsPanel(id){
+  var R=opsRes(id); if(!R) return "";
+  var E=opsEquiv(id, 30), S=opsShare(id, 30), A=opsArea(R);
+  var inner='<div class="ctrl"><label>المسطح المستخدَم (كم²):</label>'
+    +'<input type="number" step="1" id="ops-a-'+R.id+'" value="'+A+'" style="width:110px">'
+    +'<button class="btn solid" id="ops-s-'+R.id+'">حفظ</button>'
+    +'<button class="btn mini" id="ops-z-'+R.id+'">الافتراضى</button></div>';
+
+  if(E&&E.few){
+    inner+='<div class="banner warn" style="margin-top:12px"><span>⚠</span><div>'
+      +'رصدتان على الأقل مطلوبتان — اجلب سلسلة هذا الخزان أولاً.</div></div>';
+  } else if(E&&E.span){
+    inner+='<div class="banner warn" style="margin-top:12px"><span>⚠</span><div>'
+      +'الفاصل بين الرصدتين '+nf(E.dt,0)+' يوماً وهو خارج نافذة ٤–٧٥ يوماً، '
+      +'فلا يُحسب تصرف مكافئ (نفس حارس قسم تشغيل الخزانات).</div></div>';
+  } else if(E){
+    var dir = E.q>0 ? {n:"احتجاز",c:"sand"} : (E.q<0 ? {n:"إطلاق فوق الوارد",c:"lake"} : {n:"شبه مستقر",c:"green"});
+    inner+='<div class="grid g4" style="margin-top:15px">'
+      +kpi("Δ","","تغيّر المنسوب", sgn(E.dh,2),"م", E.t0+" ← "+E.t1+" ("+nf(E.dt,0)+" يوماً)")
+      +kpi("∑", dir.c, "الحجم المتغيّر", sgn(E.dV,2),"مليار م³","بمسطح "+nf(E.area,0)+" كم²")
+      +kpi("≋", dir.c, "التصرف المكافئ", sgn(E.q,0),"م³/ث","المدى "+sgn(E.qLo,0)+" إلى "+sgn(E.qHi,0))
+      +kpi("◈", dir.c, "الاتجاه", esc(dir.n),"", "موجب = يسحب من النهر")
+      +'</div>';
+    if(S&&!S.noQ){
+      var sev = Math.abs(S.pct)>=15 ? "danger" : (Math.abs(S.pct)>=5 ? "sand" : "green");
+      inner+='<div class="banner '+(sev==="green"?"info":"warn")+'" style="margin-top:12px"><span>▣</span><div>'
+        +'<b>نسبة الأثر:</b> التصرف المكافئ '+sgn(E.q,0)+' م³/ث مقابل '
+        +nf(S.Q,0)+' م³/ث مُنمذَجة عند '+esc(R.stNm)+' = <b>'+sgn(S.pct,1)+'٪</b>. '
+        +(Math.abs(S.pct)<5
+          ? 'أثر صغير فى هذه النافذة.'
+          : '<b>هذا القدر غائب تماماً من GloFAS</b> لأنه نموذج جريان طبيعى لا يرى الخزان — '
+            +'فجزء من الفارق بين أرقامنا والواقع أسفل الخزان مفسَّر هنا بسبب فيزيائى مرصود لا بانحياز عام.')
+        +'</div></div>';
+    } else if(S&&S.noQ){
+      inner+='<div class="banner warn" style="margin-top:12px"><span>⚠</span><div>'
+        +'تصرف '+esc(R.stNm)+' غير متاح الآن فلا تُحسب النسبة — والتصرف المكافئ أعلاه صالح بذاته.</div></div>';
+    }
+  }
+
+  inner+='<div class="banner warn" style="margin-top:12px"><span>⚠</span><div>'
+    +'<b>المسطح هو الحدّ الحاكم.</b> '+esc(R.aSrc)+'. '
+    +'والمسطح يصغر مع انخفاض المنسوب، والافتراضى هنا هو <b>الأكبر</b> — '
+    +'فالتصرف المكافئ يُقرأ <b>حدّاً أعلى</b> عند المناسيب المنخفضة. '
+    +'وعمود «المدى» أعلاه يعطى أثر عدم اليقين هذا صراحةً بدل إخفائه.</div></div>';
+  inner+='<div class="banner info" style="margin-top:10px"><span>ℹ</span><div>'
+    +esc(R.note)+' <b>هذه الطبقة مؤشر أثر لا تصحيح</b> — لا تدخل التتبّع ولا الاتزان ولا الإنذار، '
+    +'ولا تُطرح من أى رقم. وظيفتها أن تُظهر كمّياً ما لا يراه النموذج.</div></div>';
+
+  return panel("أثر التشغيل — "+esc(R.nm),"تحويل تغيّر المنسوب المرصود إلى تصرف مكافئ", inner,
+    'الحساب: <b>المسطح × تغيّر المنسوب ÷ الزمن</b>. '
+    +'لا يحتاج منحنى تخزين ولا تصحيح مرجع رأسى لأنه مبنى على <b>الفرق</b> لا على القيمة المطلقة.');
+}
+
 function secGwm(){
   var T=gwmTarget(ST.gwm.sel), L=gwmLast(T.id), X=gwmCross(), i;
   var sel='<div class="ctrl"><label>الهدف:</label><select id="gwm-sel">';
@@ -5561,6 +5681,7 @@ function secGwm(){
     }
   }
 
+  if(opsRes(ST.gwm.sel)) s+=opsPanel(ST.gwm.sel);
   s+=gwmWorkerHint();
   s+='<div class="banner info" style="margin-top:10px"><span>ℹ</span><div>'
     +'<b>حدود معلنة.</b> الدورة ٢١ يوماً لSWOT و١٠ أيام لجيسون/Sentinel-6A — '
@@ -7237,6 +7358,29 @@ function bindControls(){
       chain=chain.then(function(){ return gwmLoad(id); }).catch(function(){ return null; });
     });
   };
+  each("[id^=ops-s-]", function(b){
+    b.onclick=function(){
+      var id=this.id.replace("ops-s-",""), R=opsRes(id);
+      var f=$("ops-a-"+id), v=f? parseFloat(f.value) : NaN;
+      if(!R) return;
+      if(isNaN(v)||v<50||v>5000){
+        netErr("مسطح غير مقبول", new Error("أدخل مساحة بالكيلومتر المربع بين 50 و5000"));
+        return;
+      }
+      try{ localStorage.setItem("mwri_ops_area_"+id, String(v)); }catch(e){}
+      auditLog("ضبط مسطح خزان", R.nm + " = " + v + " كم²");
+      render();
+    };
+  });
+  each("[id^=ops-z-]", function(b){
+    b.onclick=function(){
+      var id=this.id.replace("ops-z-",""), R=opsRes(id);
+      try{ localStorage.removeItem("mwri_ops_area_"+id); }catch(e){}
+      auditLog("استعادة مسطح افتراضى", R? R.nm : id);
+      render();
+    };
+  });
+
   el=$("gwm-proxy"); if(el) el.onclick=function(){
     var cur=gwmProxy();
     var v=window.prompt("عنوان وسيط GWM (اكتب default للعودة للافتراضى، أو direct لمحاولة النداء المباشر):", cur);

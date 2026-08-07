@@ -1,5 +1,5 @@
 /* مِرقاب الفيضان — Service Worker */
-var VERSION = "nile-flood-forecast-v2.56";
+var VERSION = "nile-flood-forecast-v2.57";
 var SHELL = ["./", "./index.html", "./manifest.json",
              "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png"];
 /* استثناء إلزامى: نطاقات البيانات الحية لا تدخل الكاش إطلاقاً (no-store)
