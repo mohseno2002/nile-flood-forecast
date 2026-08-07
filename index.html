@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.77</small>
+      <small id="buildtag">build 2.85</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.77";
+var BUILD = "2.85";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -5216,38 +5216,54 @@ function donResolve(series, hObs, sigA){
 
 /* تحويل رصدة DAHITI إلى تصرف مرصود مشتق — بشريط خطأ لا رقم مسطّح.
    خارج نطاق المنحنى المعتمد ترجع null ولا تُستقرأ. */
-function donQ(vD, datum, sig, cms){
+function donQ(vD, datum, sig, cms, sid, mm){
+  var C=rlvCfg(sid||"dongola");
   if(typeof vD!=='number'||isNaN(vD)||typeof datum!=='number'||isNaN(datum))
     return { h:null, q:null, lo:null, hi:null, why:'المرجع أو الرصدة غير متاحين' };
-  var h=vD+datum-DON_ZERO;
-  var q=dongolaQ(h,cms);
+  var h=vD+datum-C.zero;
+  var q=C.q(h,cms,mm);
   if(q===null) return { h:h, q:null, lo:null, hi:null,
-    why:'خارج نطاق المنحنى المعتمد ١٠٫٠٠–١٦٫٠٠ م' };
+    why:'خارج نطاق المنحنى المعتمد '+nf(C.lo,2)+'–'+nf(C.hi,2)+' م' };
   var sg=(typeof sig==='number'&&!isNaN(sig))?Math.abs(sig):0;
-  return { h:h, q:q, lo:dongolaQ(h-sg,cms), hi:dongolaQ(h+sg,cms), why:'' };
+  return { h:h, q:q, lo:C.q(h-sg,cms,mm), hi:C.q(h+sg,cms,mm), why:'' };
 }
 
-function donState(D){
-  var R=donResolve((D&&D.series)?D.series:null, DON_ANCHOR_H, DON_ANCHOR_U);
-  ST.rlv.don=R;
-  /* الأولوية لمتوسط الشهور: أربع مزاوجات مستقلة أوثق من نافذة واحدة */
-  var M=donMonthly((D&&D.series)?D.series:null);
-  ST.rlv.donMon=M;
-  if(M&&M.k>=3&&M.mean!==null){ DON_DATUM=M.mean; DON_DATUM_U=M.se; DON_DATUM_SRC='شهرى'; }
-  else if(R.st==='ok'){ DON_DATUM=R.datum; DON_DATUM_U=R.u; DON_DATUM_SRC='نافذة مايو'; }
-  else { DON_DATUM=null; DON_DATUM_U=null; DON_DATUM_SRC=''; }
+function donState(D,sid){
+  sid=sid||"dongola";
+  var S=(D&&D.series)?D.series:null;
+  var R=(sid==="dongola")? donResolve(S, DON_ANCHOR_H, DON_ANCHOR_U) : null;
+  var M=donMonthly(S,sid);
+  if(sid==="dongola"){ ST.rlv.don=R; ST.rlv.donMon=M; }
+  var d=null,u=null,src='';
+  /* حكم الشكل يحكم التبنّى: متوسط لشهور متعارضة بلا معنى مهما كثرت.
+     التشتّت المرصود لا يتجاوز ضعف المتوقَّع من الضجيج وإلا لا يُعتمد Δ. */
+  var shapeOk=(M&&M.ratio!==null&&M.ratio!==undefined)?(M.ratio<=2.0):true;
+  if(M&&M.k>=3&&M.mean!==null&&shapeOk){ d=M.mean; u=M.se; src='شهرى'; }
+  else if(M&&M.k>=3&&M.mean!==null&&!shapeOk){ d=null; u=null; src='مرفوض — تعارض شكل'; }
+  else if(M&&M.k===2&&M.mean!==null){ d=M.mean; u=M.se; src='شهران — أوّلى'; }
+  else if(R&&R.st==='ok'){ d=R.datum; u=R.u; src='نافذة مايو'; }
+  if(!ST.rlv.dat) ST.rlv.dat={};
+  ST.rlv.dat[sid]={ d:d, u:u, src:src, mon:M };
+  if(sid==="dongola"){ DON_DATUM=d; DON_DATUM_U=u; DON_DATUM_SRC=src; }
   return R;
+}
+function rlvDatum(sid){
+  var x=(ST.rlv.dat&&ST.rlv.dat[sid])?ST.rlv.dat[sid]:null;
+  return x?x:{ d:null, u:null, src:'', mon:null };
 }
 
 /* السلسلة المرصودة المشتقّة: كل رصدة DAHITI تُحوَّل بمنحنى الوزارة إلى تصرف بحدّيه.
    ليست قياساً مباشراً — القمر قاس منسوباً والمنحنى حوّله. */
-function donDerived(series){
-  if(!series||!series.length||DON_DATUM===null) return null;
-  var i, out=[], nOut=0, sg=(DON_DATUM_U!==null)?DON_DATUM_U:0;
+function donDerived(series,sid,datum,sigma){
+  /* null صريح يعنى «غير محلول» ولا يرتدّ لمرجع محطة أخرى — undefined وحده هو الافتراضى */
+  var dt=(datum===undefined)?DON_DATUM:datum;
+  var sgIn=(sigma===undefined)?DON_DATUM_U:sigma;
+  if(!series||!series.length||dt===null) return null;
+  var i, out=[], nOut=0, sg=(sgIn!==null)?sgIn:0;
   for(i=0;i<series.length;i++){
     var r=series[i];
     if(!r||typeof r.v!=='number'||isNaN(r.v)) continue;
-    var z=donQ(r.v, DON_DATUM, sg, true);
+    var z=donQ(r.v, dt, sg, true, sid, (typeof r.t==='string')?r.t.slice(5,7):null);
     if(z.q===null){ nOut++; out.push({ t:r.t, v:r.v, h:z.h, q:null }); }
     else out.push({ t:r.t, v:r.v, h:z.h, q:z.q, lo:z.lo, hi:z.hi });
   }
@@ -5260,9 +5276,135 @@ function donDerived(series){
 /* ══ التحقق المرجعى: النموذج مقابل التصرف المرصود المشتقّ عند دنقلا ══
    أول قياس دقة حقيقى فى التطبيق: كل الطبقات السابقة كانت تقارن النموذج بنفسه
    أو بمنسوب، وهنا يُقارَن بتصرف مصدره رصد. مرجع الحقيقة هو المشتقّ لا النموذج. */
-function donSkill(D){
-  var A=ST.rlv.arch&&ST.rlv.arch.dongola?ST.rlv.arch.dongola:null;
-  var X=donDerived((D&&D.series)?D.series:null);
+/* ══ تحقق مستقل من المنحنى: وارد حلفا المقيس ٢٠٢٤ شهرياً ══
+   حلفا أسفل دنقلا بـ٣٥٠ كم وفواقد ٣–٥٪. فالمعامل اللازم لكل شهر
+   = (حلفا × 1.035) ÷ (المنحنى عند منسوب دنقلا) يجب أن يكون ~1.00.
+   وانحرافه يحدّد أى شريحة من المنحنى تخطئ وبكم — بلا ألتيمترى ولا إزاحة. */
+var HAL_2024=[
+  { k:"01", nm:"يناير",  q:67.7,  d:31 }, { k:"02", nm:"فبراير", q:62.1,  d:29 },
+  { k:"03", nm:"مارس",   q:54.8,  d:31 }, { k:"04", nm:"أبريل",  q:46.7,  d:30 },
+  { k:"05", nm:"مايو",   q:38.7,  d:31 }, { k:"06", nm:"يونيو",  q:53.3,  d:30 },
+  { k:"07", nm:"يوليو",  q:395.2, d:31 }, { k:"08", nm:"أغسطس",  q:929.0, d:31 },
+  { k:"09", nm:"سبتمبر", q:1030.0,d:30 }, { k:"10", nm:"أكتوبر", q:683.9, d:31 },
+  { k:"11", nm:"نوفمبر", q:206.7, d:30 }, { k:"12", nm:"ديسمبر", q:122.6, d:31 }
+];
+var DON_ST_2024={ "01":11.20,"02":10.70,"03":10.45,"04":10.25,"05":10.10,"06":10.38,
+                  "07":11.80,"08":14.85,"09":15.40,"10":13.60,"11":12.35,"12":11.65 };
+var HAL_LOSS=1.035;
+function donCurveCheck(){
+  var i, rows=[], vD=0, vT=0;
+  for(i=0;i<HAL_2024.length;i++){
+    var M=HAL_2024[i], h=DON_ST_2024[M.k];
+    if(h===undefined) continue;
+    var q=donActiveQ(h,false,M.k);
+    if(q===null) continue;
+    var tgt=M.q*HAL_LOSS;
+    vD+=q*M.d/1000; vT+=tgt*M.d/1000;
+    rows.push({ nm:M.nm, h:h, q:q, hal:M.q, tgt:tgt, f:tgt/q, r:q/M.q });
+  }
+  if(rows.length<6) return null;
+  var lo=null, hi=null, i2;
+  for(i2=0;i2<rows.length;i2++){
+    if(lo===null||rows[i2].f<lo) lo=rows[i2].f;
+    if(hi===null||rows[i2].f>hi) hi=rows[i2].f;
+  }
+  return { rows:rows, volD:vD, volT:vT, fAll:vT/vD, lo:lo, hi:hi, spread:hi/lo };
+}
+function donCurveCheckHtml(sid){
+  if(sid!=="dongola") return "";
+  var C=donCurveCheck(); if(!C) return "";
+  var i, tr="";
+  for(i=0;i<C.rows.length;i++){
+    var R=C.rows[i], good=(R.f>=0.90&&R.f<=1.10);
+    tr+='<tr><td><b>'+esc(R.nm)+'</b></td>'
+      +'<td class="num">'+nf(R.h,2)+'</td>'
+      +'<td class="num">'+nf(R.q/0.0864,0)+'</td>'
+      +'<td class="num">'+nf(R.hal/0.0864,0)+'</td>'
+      +'<td class="num"><b>'+nf(R.f,3)+'</b></td>'
+      +'<td>'+(good?'<span class="pill green">مطابق</span>':'<span class="pill danger">'+nf(R.r,2)+'× زيادة</span>')+'</td></tr>';
+  }
+  var body='<div class="grid g4">'
+    +kpi('Σ','danger','دنقلا بالمنحنى',nf(C.volD,1),'مليار م³','١٢ شهراً ٢٠٢٤')
+    +kpi('◉','lake','حلفا المقيس + فواقد',nf(C.volT,1),'مليار م³','٣٫٥٪ على ٣٥٠ كم')
+    +kpi('×','danger','المعامل الموحّد',nf(C.fAll,3),'','لإغلاق السنة')
+    +kpi('↔','danger','مدى المعامل الشهرى',nf(C.lo,2)+'–'+nf(C.hi,2),'','تباين '+nf(C.spread,1)+'×')
+    +'</div>';
+  body+='<div class="banner danger" style="margin-top:12px"><span>⛔</span><div>'
+    +'<b>معامل واحد مستحيل — المعامل اللازم يتغيّر '+nf(C.spread,1)+'×.</b> '
+    +'شهور الفيضان تحتاج <b>~١٫٠٠</b> (المنحنى مضبوط هناك، ويؤكده قياس ADCP عند ١٥٫٢٠ م بفارق +١٫٦٪) '
+    +'وشهور التحاريق تحتاج <b>٠٫٢٢–٠٫٤٢</b>. '
+    +'فالخلل <b>محصور فى الشريحة الدنيا</b> ولا يعالجه ضرب سنوى ولا معامل انحصار موحّد.</div></div>';
+  body+='<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
+    +'<b>وأصعب رقم:</b> يناير — دنقلا بالمنحنى '+nf(C.rows[0].q/0.0864,0)+' م³/ث مقابل حلفا '
+    +nf(C.rows[0].hal/0.0864,0)+' فى الشهر نفسه، أى <b>'+nf(C.rows[0].r,1)+'×</b> على ٣٥٠ كم. '
+    +'لا بخر ولا رشح ولا انحراف هيدروليكى يزيل هذا القدر شتاءً — '
+    +'فإمّا الشريحة الدنيا خاطئة أو مناسيب الشتاء لا تقابل تصرفاً حراً (أثر تشغيل مروى أو ارتداد).</div></div>';
+  body+='<div class="tb-wrap" style="margin-top:12px"><table class="tb"><thead><tr>'
+    +'<th>الشهر</th><th>منسوب دنقلا (م)</th><th>المنحنى (م³/ث)</th><th>حلفا المقيس (م³/ث)</th><th>المعامل اللازم</th><th></th>'
+    +'</tr></thead><tbody>'+tr+'</tbody></table></div>';
+  return panel('تحقق المنحنى من الموازنة — دنقلا مقابل حلفا ٢٠٢٤',
+    'وارد حلفا المقيس شهرياً يعاير منحنى دنقلا مباشرةً — بلا قمر صناعى ولا إزاحة',body,
+    'الفواقد المفترضة ٣٫٥٪ على ٣٥٠ كم. والنتيجة تُقرأ كتشخيص لموضع الخطأ لا كتصحيح: '
+    +'لا يُضرب المنحنى فى أى معامل قبل إعادة اشتقاق شريحته الدنيا من قياسات تصرف عند مناسيب منخفضة.');
+}
+
+function donAltHtml(sid){
+  if(sid!=="dongola") return "";
+  var C=donCurveCheck(); if(!C) return "";
+  var i, tr="", vOff=0, vAlt=0, vT=0, wOff=0, wAlt=0;
+  for(i=0;i<C.rows.length;i++){
+    var R=C.rows[i], mm=HAL_2024[i].k, dd=HAL_2024[i].d;
+    var qa=R.q;
+    var qo=dongolaQ(R.h,false);
+    var eo=(qo!==null)?((qo-R.tgt)/R.tgt*100):null, ea=(qa!==null)?((qa-R.tgt)/R.tgt*100):null;
+    vT+=R.tgt*dd/1000; if(qo!==null) vOff+=qo*dd/1000; if(qa!==null) vAlt+=qa*dd/1000;
+    if(eo!==null&&Math.abs(eo)>wOff) wOff=Math.abs(eo);
+    if(ea!==null&&Math.abs(ea)>wAlt) wAlt=Math.abs(ea);
+    tr+='<tr><td><b>'+esc(R.nm)+'</b></td><td class="num">'+nf(R.h,2)+'</td>'
+      +'<td class="num">'+nf(R.tgt,1)+'</td>'
+      +'<td class="num">'+(qo!==null?nf(qo,1):'—')+'</td><td class="num">'+(eo!==null?sgn(eo,1)+'٪':'—')+'</td>'
+      +'<td class="num"><b>'+(qa!==null?nf(qa,1):'—')+'</b></td>'
+      +'<td>'+(ea===null?'—':('<span class="pill '+(Math.abs(ea)<=6?'green':(Math.abs(ea)<=15?'sand':'danger'))+'">'+sgn(ea,1)+'٪</span>'))+'</td></tr>';
+  }
+  var body='<div class="grid g4">'
+    +kpi('◈','green','المنحنى الفعّال','البديل','','المُعايَر حجمياً — الوحيد')
+    +kpi('Σ','green','الحجم بالبديل',nf(vAlt,1),'مليار م³',sgn((vAlt-vT)/vT*100,1)+'٪ عن الهدف')
+    +kpi('Σ','','الوزارى (تاريخى)',nf(vOff,1),'مليار م³',sgn((vOff-vT)/vT*100,1)+'٪ — ملغى')
+    +kpi('!','','أسوأ خطأ شهرى',nf(wAlt,0)+'٪','','بالبديل · والوزارى كان '+nf(wOff,0)+'٪')
+    +'</div>';
+  body+='<div class="banner danger" style="margin-top:12px"><span>⚑</span><div>'
+    +'<b>المنحنى الوزارى أُلغى من مسار التشغيل بقرار صريح.</b> '
+    +'البديل المُعايَر حجمياً هو الآن المنحنى الوحيد فى السلسلة المشتقّة وفى كل حساب، '
+    +'والعمود الوزارى فى الجدول أدناه <b>مرجع تاريخى للمقارنة لا غير</b>.</div></div>';
+  body+='<div class="banner info" style="margin-top:12px"><span>ℹ</span><div>'
+    +'<b>البديل بفرعين لأن منحنى أحادى القيمة مستحيل:</b> يوليو عند ١١٫٨٠ م يحتاج ٤٠٩ '
+    +'ونوفمبر عند ١٢٫٣٥ م يحتاج ٢١٤ — منسوب أعلى بتصرف أقل، فالحلقة مفروضة بالبيانات لا مختارة.<br>'
+    +'<b>يونيو–أكتوبر:</b> Q = 269.40·(H−10.23)^0.831 &nbsp;·&nbsp; '
+    +'<b>نوفمبر–مايو:</b> Q = 0.2199·(H−6.00)^3.700 &nbsp;(مليون م³/يوم)</div></div>';
+  body+='<div class="banner ok" style="margin-top:10px"><span>✓</span><div>'
+    +'<b>تحقق مستقل:</b> الفرع العالى لُوئم على أحجام حلفا وحدها بلا أى مدخل من ADCP، '
+    +'ويعطى عند ١٥٫٢٠ م <b>'+nf(dongolaQAlt(15.20,true,"09"),0)+' م³/ث</b> مقابل قياس ADCP <b>١١٬٨٢٠</b> — '
+    +'أى فرق '+sgn((dongolaQAlt(15.20,true,"09")-11820)/11820*100,1)+'٪. نظامان مستقلان يلتقيان.</div></div>';
+  body+='<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
+    +'<b>حدود البديل معلنة:</b> مُلائم على مدى ١٠٫١٠–١٥٫٤٠ م وخارجه استقراء · '
+    +'و<b>يناير مستبعَد من ملاءمة الفرع المنخفض</b> كقيمة شاذّة (يخرج +٤٠٪) لأن حساسيته متناقضة مع جاريه · '
+    +'ومرجعه <b>سجل حلفا ٢٠٢٤</b> فهو صحيح بقدر صحته · '
+    +'ولا يوافق نقاط ADCP المنخفضة (عند ١٠٫١٠ يعطى ٤٥٥ م³/ث مقابل ١٬١٣٧) — '
+    +'التعارض بين ADCP وسجل حلفا قائم ولم يُحسم، والبديل انحاز لحلفا لأنها ١٢ شهراً مقابل ٣ نقاط.</div></div>';
+  body+='<div class="tb-wrap" style="margin-top:12px"><table class="tb"><thead><tr>'
+    +'<th>الشهر</th><th>H (م)</th><th>الهدف من حلفا</th><th>الوزارى</th><th>خطؤه</th><th>البديل</th><th>خطؤه</th>'
+    +'</tr></thead><tbody>'+tr+'</tbody></table></div>';
+  return panel('منحنى دنقلا المعتمد فى النموذج — مُعايَر على الموازنة',
+    'الوزارى ملغى · عموده مرجع تاريخى · الوحدة مليون م³/يوم',body,
+    'هذا منحنى <b>نموذج قيد الإعداد</b> لا منحنى رسمى. مرجعه سجل حلفا ٢٠٢٤ لسنة واحدة، '
+    +'ولا يُستشهد به فى مخاطبة رسمية قبل اعتماد قطاع مياه النيل له.');
+}
+
+function donSkill(D,sid){
+  sid=sid||"dongola";
+  var Z=rlvDatum(sid);
+  var A=(ST.rlv.arch&&ST.rlv.arch[sid])?ST.rlv.arch[sid]:null;
+  var X=donDerived((D&&D.series)?D.series:null,sid,Z.d,Z.u);
   if(!A||!A.t||!X) return null;
   var map={}, i;
   for(i=0;i<A.t.length;i++){
@@ -5288,10 +5430,12 @@ function donSkill(D){
     mObs:so/O.length, mSim:ss/S.length,
     ratio:(so>0)?(ss/so):null, O:O, S:S, T:T };
 }
-function donSkillHtml(D){
-  var K=donSkill(D);
+function donSkillHtml(D,sid){
+  sid=sid||"dongola";
+  var CN=rlvCfg(sid).nm;
+  var K=donSkill(D,sid);
   if(!K) return "";
-  if(K.few) return panel('التحقق المرجعى — النموذج مقابل الرصد','GloFAS عند دنقلا مقابل التصرف المرصود المشتقّ',
+  if(K.few) return panel('التحقق المرجعى — النموذج مقابل الرصد','GloFAS عند '+esc(CN)+' مقابل التصرف المرصود المشتقّ',
     '<div class="banner warn"><span>⚠</span><div><b>أزواج قليلة ('+K.n+').</b> '
     +'يلزم جلب أرشيف التصرف لنفس المحطة قبل المقارنة — اضغط زر الجلب مرة أخرى.</div></div>',
     'المقارنة تحتاج تطابق التاريخ بين رصدة مدارية محوَّلة وقيمة نموذج لنفس اليوم.');
@@ -5327,15 +5471,28 @@ function donSkillHtml(D){
       +' والنموذجية فى '+esc(K.peak.tSim)+' — فارق التوقيت <b>'+K.peak.dtDays
       +'</b> يوماً وفارق المقدار <b>'+sgn(K.peak.dQpct,1)+'٪</b>. '
       +'وتُقرأ بتحفّظ: العيّنة أيام مرور مدارى متباعدة فقد لا تلتقط يوم الذروة الحقيقى.</p>';
-  return panel('التحقق المرجعى — النموذج مقابل الرصد','GloFAS عند دنقلا مقابل التصرف المرصود المشتقّ',body,
+  return panel('التحقق المرجعى — النموذج مقابل الرصد','GloFAS عند '+esc(CN)+' مقابل التصرف المرصود المشتقّ',body,
     'المقارنة على أيام المرور المدارى وحدها ('+K.n+' يوماً)، وليست سلسلة يومية متصلة. '
     +'ولا تُحمَّل نتيجتها على محطة أخرى: الانحياز يختلف من عقدة لأخرى كما أظهرت معاملات المعايرة.');
 }
 
-function donDerivedHtml(D){
+function donDerivedHtml(D,sid){
+  sid=sid||"dongola";
+  var C=rlvCfg(sid), Z=rlvDatum(sid);
   var S=(D&&D.series)?D.series:null;
-  var X=donDerived(S);
-  if(!X) return "";
+  var X=donDerived(S,sid,Z.d,Z.u);
+  if(!X){
+    if(Z.src==="مرفوض — تعارض شكل")
+      return panel('سلسلة التصرف المرصود المشتقّ — '+esc(C.nm),'المرجع الرأسى مرفوض',
+        '<div class="banner danger"><span>⛔</span><div>'
+        +'<b>لا تُبنى سلسلة: الإزاحة مرفوضة لتعارض الشكل.</b> '
+        +'الفروق بين الشهور فى المقياس لا تطابق نظيرتها فى الألتيمترى، '
+        +'والإزاحة الثابتة لا تصلح ذلك لأنها تُلغى بالطرح. '
+        +'فمتوسط Δ عبر شهور متعارضة رقم بلا معنى مهما كثرت الشهور — '
+        +'ولذلك يُحجب بدل أن يُعرض.</div></div>',
+        'راجع لوحة المزاوجة الشهرية أعلاه: الشهر الأبعد عن الاتساق يحدّد أين الخلل.');
+    return "";
+  }
   var i, tr="", rows=X.rows.slice(-12).reverse();
   for(i=0;i<rows.length;i++){
     var r=rows[i];
@@ -5350,14 +5507,41 @@ function donDerivedHtml(D){
     +kpi('Σ','lake','رصدات محوَّلة',X.nQ+' / '+X.n,'رصدة',X.nOut+' خارج نطاق المنحنى')
     +kpi('◷','green','أحدث تصرف مشتقّ',(X.last?nf(X.last.q,0):'—'),'م³/ث',(X.last?esc(X.last.t):'—'))
     +kpi('▲','lake','أعلى تصرف مشتقّ',(X.max?nf(X.max.q,0):'—'),'م³/ث',(X.max?esc(X.max.t):'—'))
-    +kpi('Δ','','المرجع المستعمَل',nf(DON_DATUM,2),'م','±'+nf(DON_DATUM_U,3)+' م · '+esc(DON_DATUM_SRC))
+    +kpi('Δ','','المرجع المستعمَل',nf(Z.d,2),'م','±'+nf(Z.u,3)+' م · '+esc(Z.src))
     +'</div>';
   body+='<div class="banner info" style="margin-top:12px"><span>ℹ</span><div>'
     +'<b>تصرف مرصود مشتقّ — لا قياس مباشر.</b> القمر قاس <b>منسوباً</b>، ومنحنى قطاع مياه النيل هو الذى حوّله إلى تصرف. '
     +'فترتيبه فى الثقة: قياس ميدانى مباشر ← <b>تصرف دنقلا المرصود المشتقّ</b> ← معايرة مبنية على قياسات ← GloFAS الخام. '
-    +'وكل قيمة تُعرض بحدّيها من إزاحة ±'+nf(X.sigma,3)+' م، ولا يُستقرأ خارج ١٠٫٠٠–١٦٫٠٠ م. '
+    +'وكل قيمة تُعرض بحدّيها من إزاحة ±'+nf(X.sigma,3)+' م، ولا يُستقرأ خارج '+nf(C.lo,2)+'–'+nf(C.hi,2)+' م. '
     +'<b>وللقيمة المفردة يتّسع الشريط:</b> ضجيج المرور المدارى الواحد يضيف نحو '
     +'±'+nf(0.11*168.35*1e6/86400,0)+' م³/ث فوق حدّ الإزاحة — فقيمة يوم بعينه تُقرأ بهامش أوسع من قيمة متوسط.</div></div>';
+  /* حارس مدى المعايرة: إزاحة مُعايَرة على مدى مناسيب ضيّق لا تُستقرأ على مدى واسع.
+     أثبتته الخرطوم: Δ عند التحاريق −١٫٢٦ وعند الفيضان +٠٫٤٥ — فارق ١٫٧ م. */
+  var Zm=rlvDatum(sid), gLo=null, gHi=null, im;
+  if(Zm&&Zm.mon&&Zm.mon.rows) for(im=0;im<Zm.mon.rows.length;im++){
+    var rr=Zm.mon.rows[im];
+    if(rr.n>0){ if(gLo===null||rr.g<gLo) gLo=rr.g; if(gHi===null||rr.g>gHi) gHi=rr.g; }
+  }
+  var hLo=null, hHi=null;
+  for(im=0;im<X.rows.length;im++){ var hh=X.rows[im].h;
+    if(hh===null||isNaN(hh)) continue;
+    if(hLo===null||hh<hLo) hLo=hh; if(hHi===null||hh>hHi) hHi=hh; }
+  if(gLo!==null&&hLo!==null&&(hHi-hLo)>0.01){
+    var cov=(gHi-gLo)/(hHi-hLo);
+    var covOk=(cov>=0.50);
+    body+='<div class="banner '+(covOk?'ok':'danger')+'" style="margin-top:10px"><span>'+(covOk?'✓':'⛔')+'</span><div>'
+      +'<b>مدى المعايرة مقابل مدى التطبيق:</b> المراسى تغطى مناسيب '
+      +nf(gLo,2)+'–'+nf(gHi,2)+' م ('+nf(gHi-gLo,2)+' م)، والسلسلة تُطبَّق على '
+      +nf(hLo,2)+'–'+nf(hHi,2)+' م ('+nf(hHi-hLo,2)+' م) — التغطية <b>'+nf(cov*100,0)+'٪</b>. '
+      +(covOk
+        ? 'كافية، فالإزاحة مُختبَرة عبر معظم مدى التشغيل.'
+        : '<b>غير كافية.</b> إزاحة مُعايَرة على شريحة ضيّقة تُستقرَأ على مدى أوسع بكثير، '
+          +'وقد أثبتت الخرطوم أن الإزاحة <b>ليست ثابتة مع المنسوب</b> (−١٫٢٦ م عند التحاريق مقابل +٠٫٤٥ عند الفيضان). '
+          +'فالقيم خارج شريحة المعايرة <b>تقديرية ولو بدا الحساب سليماً</b>، '
+          +'والعلاج مراسٍ شهرية تغطى الفيضان أيضاً لا زيادة رصدات فى نفس الشريحة.')
+      +'</div></div>';
+  }
+
   /* حارس إغلاق الحجم: متوسط السلسلة المشتقّة يجب ألا يتجاوز مدى وارد حلفا المقيس.
      تجاوزه دليل على انحياز فى الطبقة نفسها لا على سوء النموذج. */
   var mq=0, cq=0, iq;
@@ -5381,7 +5565,7 @@ function donDerivedHtml(D){
     +'<th>التاريخ</th><th>DAHITI (م)</th><th>قراءة المقياس (م)</th><th>تصرف (م³/ث)</th><th>المدى</th><th></th>'
     +'</tr></thead><tbody>'+tr+'</tbody></table></div>'
     +'<p class="note">آخر ١٢ رصدة من '+X.n+'. الحدّان من إزاحة المرجع وحدها ولا يشملان عدم يقين المنحنى نفسه ولا الانحراف الهيدروليكى بين ساقَى الصعود والهبوط (٨–١٥٪).</p>';
-  return panel('سلسلة التصرف المرصود المشتقّ — دنقلا','منسوب DAHITI ← إزاحة المرجع ← منحنى قطاع مياه النيل',body,
+  return panel('سلسلة التصرف المرصود المشتقّ — '+esc(C.nm),'منسوب DAHITI ← إزاحة المرجع ← منحنى قطاع مياه النيل',body,
     'أول سلسلة تصرف فى التطبيق مصدرها رصد لا نموذج. '
     +'<b>التغطية أفضل عند الفيضان</b> (بعض قراءات التحاريق تخرج دون ١٠٫٠٠ م فتُرَدّ بلا قيمة)، '
     +'لكن <b>الدقة أفضل عند التحاريق</b>: الإزاحة مُعايَرة على مارس–يونيو، '
@@ -5391,17 +5575,102 @@ function donDerivedHtml(D){
 /* المزاوجة الشهرية: أربعة متوسطات مقياس حقلية مقابل متوسطات مدارية لنفس الشهر.
    قيمتها أن الإزاحة الثابتة لا تغيّر الفروق بين الشهور — فتشتّت Delta عبر الشهور
    اختبار شكل مستقل عن المرجع تماماً، ومتوسطها يلغى ضجيج المرور المفرد. */
-var DON_MON = [
-  { k:"2024-03", nm:"مارس ٢٠٢٤",  g:10.45 },
-  { k:"2024-04", nm:"أبريل ٢٠٢٤", g:10.25 },
-  { k:"2024-05", nm:"مايو ٢٠٢٤",  g:10.10 },
-  { k:"2024-06", nm:"يونيو ٢٠٢٤", g:10.38 }
+/* ══ الخرطوم — منحنى قطاع مياه النيل عند الملتقى ══
+   الجدول الحقلى هو المعتمد، والاستيفاء خطى بين نقاطه فيعيدها بالضبط ويظل متصلاً.
+   (الصيغتان التحليليتان المقترَحتان أُسقطتا: الدنيا تقلّ عن الجدول حتى ٤٫٤٪،
+    وبينهما قفزة ٤٫٧٪ عند ١٣٫٥٠ — والجدول أقرب للواقع كما تقرّر عند دنقلا.) */
+var KRT_ZERO=360.00;
+var KRT_TB=[[10.50,59.8],[11.50,158.3],[12.50,288.7],[13.50,438.3],
+            [14.50,533.3],[16.50,784.1],[17.58,919.5]];
+var KRT_ALERT=16.50, KRT_MAX2020=17.58;
+/* ══ منحنى دنقلا البديل — مُعايَر على الموازنة الحجمية ══
+   لُوئم على أهداف حلفا الشهرية المقيسة ٢٠٢٤ × ١٫٠٣٥ (فواقد المقطع)، لا على المنحنى الوزارى.
+   فرعان لأن منحنى أحادى القيمة مستحيل: يوليو (11.80 م) يحتاج 409 ونوفمبر (12.35 م) يحتاج 214
+   — منسوب أعلى بتصرف أقل، فالحلقة مفروضة بالبيانات.
+   تحقق مستقل: الفرع العالى لم يدخله أى مدخل من ADCP، ويعطى عند 15.20 م القيمة 1021.4
+   مقابل قياس ADCP 1021.2 (فرق 0.0٪).
+   يناير مستبعَد من ملاءمة الفرع المنخفض كقيمة شاذّة معلنة (يخرج +40٪). */
+var DALT_HI={ a:269.4032, h0:10.23, m:0.831 };   /* يونيو–أكتوبر */
+var DALT_LO={ a:0.2199,   h0:6.00,  m:3.700 };   /* نوفمبر–مايو (بلا يناير) */
+var DALT_FIT_LO=10.10, DALT_FIT_HI=15.40;        /* مدى الملاءمة الفعلى */
+function dongolaQAlt(H, cms, mm){
+  if(H===null||H===undefined||isNaN(H)) return null;
+  if(H<DON_LO||H>DON_HI) return null;
+  var hi=(mm==="06"||mm==="07"||mm==="08"||mm==="09"||mm==="10");
+  var C=hi?DALT_HI:DALT_LO;
+  if(H<=C.h0) return 0;
+  var q=C.a*Math.pow(H-C.h0, C.m);
+  return cms ? q*1e6/86400 : q;
+}
+/* ⚑ قرار م. محسن (٧ أغسطس ٢٠٢٦): أُلغى المنحنى الوزارى من مسار التشغيل،
+   والبديل المُعايَر حجمياً هو المنحنى الوحيد. ودالة dongolaQ باقية للمقارنة التاريخية فقط
+   — تُعرض فى جدول المقارنة ولا تدخل أى حساب. */
+function donActiveQ(H, cms, mm){ return dongolaQAlt(H,cms,mm); }
+
+function khartoumQ(H, cms){
+  if(H===null||H===undefined||isNaN(H)) return null;
+  if(H<KRT_TB[0][0]||H>KRT_TB[KRT_TB.length-1][0]) return null;
+  var i, q=null;
+  for(i=0;i<KRT_TB.length-1;i++){
+    if(H<=KRT_TB[i+1][0]){
+      var a=KRT_TB[i][0], qa=KRT_TB[i][1], b=KRT_TB[i+1][0], qb=KRT_TB[i+1][1];
+      q=qa+(qb-qa)*(H-a)/(b-a); break;
+    }
+  }
+  if(q===null) return null;
+  return cms ? q*1e6/86400 : q;
+}
+/* السنة المرجعية ٢٠٢٤ — اثنا عشر شهراً من سجل قطاع مياه النيل.
+   تغطى التحاريق (١٠٫٧٠) والذروة (١٦٫٤٥) فتحسم هل الإزاحة تابعة للمنسوب. */
+var KRT_MON=[
+  { k:"2024-01", nm:"يناير ٢٠٢٤",  g:11.85 },
+  { k:"2024-02", nm:"فبراير ٢٠٢٤", g:11.20 },
+  { k:"2024-03", nm:"مارس ٢٠٢٤",   g:10.90 },
+  { k:"2024-04", nm:"أبريل ٢٠٢٤",  g:10.70 },
+  { k:"2024-05", nm:"مايو ٢٠٢٤",   g:10.95 },
+  { k:"2024-06", nm:"يونيو ٢٠٢٤",  g:11.60 },
+  { k:"2024-07", nm:"يوليو ٢٠٢٤",  g:13.40 },
+  { k:"2024-08", nm:"أغسطس ٢٠٢٤",  g:16.10 },
+  { k:"2024-09", nm:"سبتمبر ٢٠٢٤", g:16.45 },
+  { k:"2024-10", nm:"أكتوبر ٢٠٢٤", g:14.80 },
+  { k:"2024-11", nm:"نوفمبر ٢٠٢٤", g:13.10 },
+  { k:"2024-12", nm:"ديسمبر ٢٠٢٤", g:12.30 }
 ];
-function donMonthly(series){
+/* مراسى ٢٠٢١ محفوظة للمقارنة التاريخية — رصدة واحدة لكل شهر فلا يُبنى عليها */
+var KRT_MON_2021=[
+  { k:"2021-04", g:10.85 }, { k:"2021-05", g:11.10 },
+  { k:"2021-08", g:16.80 }, { k:"2021-09", g:16.20 }
+];
+/* إعداد كل محطة قابلة للتحويل إلى تصرف مرصود مشتقّ */
+function rlvCfg(sid){
+  if(sid==="khartoum") return { sid:"khartoum", nm:"الخرطوم", zero:KRT_ZERO, q:khartoumQ,
+    mon:KRT_MON, anchorH:10.85, anchorU:0.05, wLo:"2021-04-01", wHi:"2021-04-30",
+    wNm:"أبريل ٢٠٢١", lo:KRT_TB[0][0], hi:KRT_TB[KRT_TB.length-1][0],
+    src:"جدول قطاع مياه النيل عند الملتقى · صفر المقياس ٣٦٠٫٠٠ م" };
+  return { sid:"dongola", nm:"دنقلا", zero:DON_ZERO, q:donActiveQ,
+    mon:DON_MON, anchorH:DON_ANCHOR_H, anchorU:DON_ANCHOR_U,
+    wLo:"2024-05-16", wHi:"2024-05-31", wNm:"١٦–٣١ مايو ٢٠٢٤",
+    lo:DON_LO, hi:DON_HI,
+    src:"جدول قطاع مياه النيل الحقلى · صفر المقياس ٢١٠٫٦٠ م" };
+}
+function rlvHasCurve(sid){ return sid==="dongola"||sid==="khartoum"; }
+
+var DON_MON = [
+  { k:"2024-03", nm:"مارس ٢٠٢٤",   g:10.45 },
+  { k:"2024-04", nm:"أبريل ٢٠٢٤",  g:10.25 },
+  { k:"2024-05", nm:"مايو ٢٠٢٤",   g:10.10 },
+  { k:"2024-06", nm:"يونيو ٢٠٢٤",  g:10.38 },
+  { k:"2024-07", nm:"يوليو ٢٠٢٤",  g:11.80 },
+  { k:"2024-08", nm:"أغسطس ٢٠٢٤",  g:14.85 },
+  { k:"2024-09", nm:"سبتمبر ٢٠٢٤", g:15.40 },
+  { k:"2024-10", nm:"أكتوبر ٢٠٢٤", g:13.60 }
+];
+function donMonthly(series,sid){
+  var C=rlvCfg(sid||"dongola"), MON=C.mon;
   if(!series||!series.length) return null;
   var i,j,rows=[],used=[];
-  for(i=0;i<DON_MON.length;i++){
-    var M=DON_MON[i], sv=0, su=0, cu=0, n=0, lo=null, hi=null;
+  for(i=0;i<MON.length;i++){
+    var M=MON[i], sv=0, su=0, cu=0, n=0, lo=null, hi=null;
     for(j=0;j<series.length;j++){
       var r=series[j];
       if(!r||typeof r.t!=='string'||r.t.slice(0,7)!==M.k) continue;
@@ -5413,7 +5682,7 @@ function donMonthly(series){
     }
     var row={ nm:M.nm, k:M.k, g:M.g, n:n,
       avg:(n>0)?(sv/n):null, u:(cu>0)?(su/cu):null, lo:lo, hi:hi, d:null };
-    if(n>0) row.d = M.g - (row.avg - DON_ZERO);
+    if(n>0) row.d = M.g - (row.avg - C.zero);
     rows.push(row);
     if(n>0) used.push(row);
   }
@@ -5437,8 +5706,25 @@ function donMonthly(series){
     sd:sdObs, sdExp:sdExp, se:sdObs/Math.sqrt(used.length), lo:mn, hi:mx,
     ratio:(sdExp!==null&&sdExp>0)?(sdObs/sdExp):null };
 }
-function donMonthlyHtml(D){
-  var M=donMonthly((D&&D.series)?D.series:null);
+/* حجم السنة من متوسطات المقياس الحقلية والمنحنى وحدهما — لا ألتيمترى ولا إزاحة.
+   يفصل خطأ المنحنى عن خطأ التحويل المدارى: إن اختلّ هنا فالعطل قبل القمر الصناعى. */
+var MON_DAYS={ "01":31,"02":29,"03":31,"04":30,"05":31,"06":30,
+               "07":31,"08":31,"09":30,"10":31,"11":30,"12":31 };
+function donFieldVol(sid){
+  var C=rlvCfg(sid), i, v=0, nd=0, miss=0;
+  for(i=0;i<C.mon.length;i++){
+    var q=C.q(C.mon[i].g,false,C.mon[i].k.slice(5,7));
+    if(q===null){ miss++; continue; }
+    var dd=MON_DAYS[C.mon[i].k.slice(5,7)]||30;
+    v+=q*dd; nd+=dd;
+  }
+  if(nd<1) return null;
+  return { bcm:v/1000, days:nd, miss:miss, full:(nd>=360),
+    annual:(v/1000)*(365/nd) };
+}
+
+function donMonthlyHtml(D,sid){
+  var M=donMonthly((D&&D.series)?D.series:null,sid);
   if(!M) return "";
   var i,tr="";
   for(i=0;i<M.rows.length;i++){
@@ -5457,7 +5743,7 @@ function donMonthlyHtml(D){
   if(M.k<2){
     out+='<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
       +'<b>شهر واحد أو لا شىء.</b> لا يُقاس تشتّت ولا يُختبر شكل — المزاوجة الشهرية تحتاج شهرين على الأقل.</div></div>';
-    return panel('المزاوجة الشهرية — اختبار الشكل','أربعة متوسطات مقياس حقلية مقابل متوسطات مدارية لنفس الشهر',out,
+    return panel('المزاوجة الشهرية — اختبار الشكل','متوسطات مقياس حقلية مقابل متوسطات مدارية لنفس الشهر',out,
       'الإزاحة الثابتة لا تغيّر الفروق بين الشهور، فتشتّت Δ عبر الشهور اختبار مستقل عن المرجع.');
   }
   /* الحكم على التشتّت المرصود مقابل المتوقَّع من الضجيج — لا عتبة ثابتة.
@@ -5484,7 +5770,23 @@ function donMonthlyHtml(D){
     +'والإزاحة الثابتة لا تغيّر الفروق بين الشهور، فاختلافها يعنى أن <b>أحد المصدرين يصف مساراً مختلفاً</b>: '
     +'إمّا رصدة مدارية شاذّة، أو متوسط شهرى حقلى لا يقابل نفس الفترة. '
     +'لا يُعتمد Δ من أى شهر منفرد قبل تفسير التعارض.</div></div>';
-  return panel('المزاوجة الشهرية — اختبار الشكل','أربعة متوسطات مقياس حقلية مقابل متوسطات مدارية لنفس الشهر',out,
+  var FV=donFieldVol(sid);
+  if(FV){
+    var vOk=(FV.annual>=45&&FV.annual<=115);
+    out+='<div class="banner '+(vOk?'ok':'danger')+'" style="margin-top:10px"><span>'+(vOk?'✓':'⛔')+'</span><div>'
+      +'<b>اختبار المنحنى وحده — بلا ألتيمترى ولا إزاحة:</b> متوسطات المقياس الحقلية '
+      +'مضروبةً فى المنحنى المعتمد تعطى <b>'+nf(FV.annual,1)+' مليار م³/سنة</b>'
+      +(FV.full?'':' (مستقرَأة من '+FV.days+' يوماً)')+'. '
+      +(vOk
+        ? 'داخل مدى وارد حلفا المقيس — فالمنحنى ومتوسطات المقياس متسقان مع الموازنة.'
+        : '<b>خارج مدى وارد حلفا المقيس</b> (٥٢٫٤ · ٦٩٫٨ · ١٠٨٫٤ مليار · والطبيعى ٨٤). '
+          +'ولا القمر الصناعى ولا الإزاحة يدخلان هذا الحساب إطلاقاً — '
+          +'فالانحياز <b>فى المنحنى أو فى متوسطات المقياس نفسها</b>، لا فى الطبقة المدارية. '
+          +'وترتيب المجرى يشدّد الأمر: الخرطوم ثم عطبرة ثم دنقلا ثم حلفا، '
+          +'فحجم أى محطة أعلى يجب أن يكون <b>أقلّ</b> من وارد حلفا مضافاً إليه الفواقد لا أعلى منه.')
+      +'</div></div>';
+  }
+  return panel('المزاوجة الشهرية — اختبار الشكل','متوسطات مقياس حقلية مقابل متوسطات مدارية لنفس الشهر',out,
     'المتوسطات الحقلية من سجل رصد قطاع مياه النيل (مارس–يونيو ٢٠٢٤). '
     +'الاختبار على <b>الفروق بين الشهور</b> فهو مستقل عن المرجع الرأسى ولا يمكن لأى إزاحة أن تُنجحه أو تُسقطه.');
 }
@@ -6273,7 +6575,9 @@ var GWM_TARGETS=[
   { id:"rose",   file:"lake000403.10d.2.txt", nm:"خزان الروصيرص", gid:"000403", cad:"١٠ أيام",
     dahiti:null, note:"خزان على الأزرق بين الديم والخرطوم — GloFAS لا يمثّل تشغيله إطلاقاً." },
   { id:"jebel",  file:"lake001437.10d.2.txt", nm:"خزان جبل أولياء", gid:"001437", cad:"١٠ أيام",
-    dahiti:null, note:"خزان على الأبيض جنوب الخرطوم — GloFAS لا يمثّل تشغيله إطلاقاً." }
+    dahiti:null, note:"خزان على الأبيض جنوب الخرطوم — GloFAS لا يمثّل تشغيله إطلاقاً." },
+  { id:"tana",   file:"lake000402.10d.2.txt", nm:"بحيرة تانا — منبع الأزرق", gid:"000402", cad:"١٠ أيام",
+    dahiti:null, note:"منبع النيل الأزرق أعلى النهضة — إشارة المنبع قبل أى تنظيم بشرى. سلسلة من أكتوبر ١٩٩٢." }
 ];
 function gwmTarget(id){ var i; for(i=0;i<GWM_TARGETS.length;i++) if(GWM_TARGETS[i].id===id) return GWM_TARGETS[i]; return GWM_TARGETS[0]; }
 function gwmProxy(){
@@ -6339,6 +6643,97 @@ function gwmCard(T){
   else { sub="لم تُجلب بعد"; }
   return kpi("\u25c9", cls, T.nm, big, "م", sub);
 }
+/* ══ حالة المنظومة — مقارنة تاريخية لنفس التاريخ ══
+   السؤال التشغيلى ليس «كم المنسوب» بل «كم هو مقارنةً بهذا اليوم من السنوات الماضية».
+   ترتيب الرتبة لا يحتاج معايرة ولا منحنى — يقارن الرصد بالرصد فقط. */
+function gwmDayOfYear(t){
+  var p=String(t).split("-");
+  var m=parseInt(p[1],10), d=parseInt(p[2],10);
+  var cum=[0,31,59,90,120,151,181,212,243,273,304,334];
+  return cum[m-1]+d;
+}
+function gwmRank(id, win){
+  var D=ST.gwm.data[id];
+  if(!D||!D.series.length) return null;
+  var S=D.series, L=S[S.length-1], doy=gwmDayOfYear(L.t), yNow=parseInt(L.t.slice(0,4),10);
+  var W=(win===undefined)?12:win, by={}, i;
+  for(i=0;i<S.length;i++){
+    var y=parseInt(S[i].t.slice(0,4),10);
+    if(y>=yNow) continue;
+    var dd=Math.abs(gwmDayOfYear(S[i].t)-doy);
+    if(dd>W) continue;
+    if(!by[y]||dd<by[y].dd) by[y]={ dd:dd, v:S[i].v, t:S[i].t };
+  }
+  var vals=[], yrs=[], k;
+  for(k in by) if(by.hasOwnProperty(k)){ vals.push(by[k].v); yrs.push(parseInt(k,10)); }
+  if(vals.length<4) return { few:true, n:vals.length, last:L };
+  var below=0, sum=0, lo=null, hi=null;
+  for(i=0;i<vals.length;i++){
+    if(vals[i]<L.v) below++;
+    sum+=vals[i];
+    if(lo===null||vals[i]<lo) lo=vals[i];
+    if(hi===null||vals[i]>hi) hi=vals[i];
+  }
+  return { last:L, n:vals.length, below:below, pct:below/vals.length*100,
+    mean:sum/vals.length, lo:lo, hi:hi, dev:L.v-sum/vals.length,
+    yFrom:Math.min.apply(null,yrs), yTo:Math.max.apply(null,yrs) };
+}
+/* مرشّح الشواذّ: تغيّر يتجاوز ما تسمح به الموازنة نفسها = رصدة فاسدة لا حدث.
+   عند ناصر المسطح ~3,900 كم² فمتر واحد = 3.9 مليار — والوارد الأقصى ~1,250 مليون م³/يوم. */
+function gwmOutliers(id, maxRate){
+  var D=ST.gwm.data[id];
+  if(!D||!D.series.length) return null;
+  var S=D.series, out=[], i, mr=(maxRate===undefined)?0.20:maxRate;
+  for(i=1;i<S.length;i++){
+    var dt=altiDayNum(S[i].t)-altiDayNum(S[i-1].t);
+    if(dt<1||dt>40) continue;
+    var rate=Math.abs(S[i].v-S[i-1].v)/dt;
+    if(rate>mr) out.push({ t:S[i].t, prev:S[i-1].t, dv:S[i].v-S[i-1].v, dt:dt, rate:rate });
+  }
+  return { n:out.length, tot:S.length-1, rows:out.slice(-8), maxRate:mr };
+}
+function gwmStatePanel(){
+  var ids=["tana","gerd","rose","jebel","nasser"], i, cards="", tr="", any=false;
+  for(i=0;i<ids.length;i++){
+    var T=gwmTarget(ids[i]), R=gwmRank(ids[i]);
+    if(!R){ tr+='<tr><td><b>'+esc(T.nm)+'</b></td><td colspan="5" class="note">لم تُجلب بعد</td></tr>'; continue; }
+    any=true;
+    if(R.few){
+      tr+='<tr><td><b>'+esc(T.nm)+'</b></td><td dir="ltr">'+esc(R.last.t)+'</td><td class="num">'+nf(R.last.v,2)
+        +'</td><td colspan="3" class="note">سنوات المقارنة قليلة ('+R.n+')</td></tr>';
+      continue;
+    }
+    var cls=(R.pct>=80)?"danger":((R.pct<=20)?"lake":"green");
+    tr+='<tr><td><b>'+esc(T.nm)+'</b></td>'
+      +'<td dir="ltr">'+esc(R.last.t)+'</td>'
+      +'<td class="num"><b>'+nf(R.last.v,2)+'</b></td>'
+      +'<td class="num">'+nf(R.lo,2)+' – '+nf(R.hi,2)+'</td>'
+      +'<td class="num">'+sgn(R.dev,2)+'</td>'
+      +'<td><span class="pill '+cls+'">'+R.below+' / '+R.n+'</span></td></tr>';
+    cards+=kpi("\u25c9",cls,T.nm,R.below+"/"+R.n,"",nf(R.last.v,2)+" م · "+sgn(R.dev,2)+" عن المتوسط");
+  }
+  if(!any) return "";
+  var body='<div class="grid g4">'+cards+'</div>';
+  body+='<div class="banner info" style="margin-top:12px"><span>\u2139</span><div>'
+    +'<b>الرتبة تقارن الرصد بالرصد لنفس اليوم من السنوات السابقة</b> (نافذة ±١٢ يوماً) — '
+    +'بلا منحنى ولا معايرة ولا نموذج، فهى أمتن ما فى التطبيق. '
+    +'«٩ / ١١» تعنى أعلى من تسع سنوات من إحدى عشرة عند نفس التاريخ.</div></div>';
+  body+='<div class="tb-wrap" style="margin-top:12px"><table class="tb"><thead><tr>'
+    +'<th>الهدف</th><th>آخر رصدة</th><th>المنسوب (م)</th><th>مدى السنوات</th><th>عن المتوسط</th><th>الرتبة</th>'
+    +'</tr></thead><tbody>'+tr+'</tbody></table></div>';
+  var O=gwmOutliers("nasser");
+  if(O&&O.n>0){
+    body+='<div class="banner warn" style="margin-top:12px"><span>\u26a0</span><div>'
+      +'<b>مرشّح الشواذّ عند ناصر:</b> '+O.n+' فترة من '+O.tot+' تغيّرت أسرع من '+nf(O.maxRate,2)+' م/يوم — '
+      +'وهو سقف تفرضه الموازنة نفسها (متر واحد ≈ ٣٫٩ مليار، وأقصى وارد ~١٬٢٥٠ مليون م³/يوم). '
+      +'هذه رصدات <b>فاسدة لا أحداث</b>، ولا تُستعمل نقطةً بنقطة فى أى اشتقاق.</div></div>';
+  }
+  return panel("حالة المنظومة — الرتبة التاريخية لنفس التاريخ",
+    "خمسة خزانات من تانا إلى ناصر · مصدر واحد مستقل (NASA GWM)",body,
+    "الرتبة لا تُغنى عن التصرف، لكنها تُجيب سؤال القيادة الأول: هل نحن أعلى أم أدنى من المعتاد اليوم؟ "
+    +"وتُقرأ صفّاً بصفّ من المنبع للمصبّ — تانا فالنهضة فالسودان فناصر.");
+}
+
 function gwmCross(){
   /* المقارنة الجوهرية: نفس الخزان من مصدرين مستقلين تماماً.
      تُزاوَج كل رصدة NASA بأقرب رصدة DAHITI داخل ٧ أيام — وبغير ذلك لا تُزاوَج. */
@@ -6706,7 +7101,7 @@ function secGwm(){
       +esc(GWM_TARGETS[i].nm)+'</option>';
   sel+='</select><button class="btn solid" id="gwm-load"'+(ST.gwm.loading?" disabled":"")+'>'
     +(ST.gwm.loading?"⏳ جارٍ الجلب…":"⤓ اجلب السلسلة")+'</button>'
-    +'<button class="btn mini" id="gwm-all"'+(ST.gwm.loading?" disabled":"")+'>⤓⤓ الأربعة</button>'
+    +'<button class="btn mini" id="gwm-all"'+(ST.gwm.loading?" disabled":"")+'>⤓⤓ الخمسة</button>'
     +'<button class="btn mini" id="gwm-proxy">الوسيط</button></div>';
 
   var s=panel("المصدر الثانى — NASA GWM","رصد ألتيمترى مستقل تماماً عن DAHITI", altiModeBar()+sel,
@@ -6717,6 +7112,8 @@ function secGwm(){
   s+='<div class="grid g4" style="margin-top:15px">';
   for(i=0;i<GWM_TARGETS.length;i++) s+=gwmCard(GWM_TARGETS[i]);
   s+='</div>';
+
+  s+=gwmStatePanel();
 
   if(ST.gwm.err)
     s+='<div class="banner danger" style="margin-top:12px"><span>✕</span><div>'
@@ -7663,7 +8060,7 @@ function rlvLoad(id){
     }
     out.sort(function(a,b){ return a.t<b.t? -1 : (a.t>b.t?1:0); });
     ST.rlv.data[id]={ series:out, at:Date.now() };
-    if(id==="dongola") donState(ST.rlv.data[id]);   /* حلّ Δdatum فور وصول سلسلة دنقلا */
+    if(rlvHasCurve(id)) donState(ST.rlv.data[id], id);   /* حلّ Δdatum فور وصول السلسلة */
     return rlvArch(id);
   }).then(function(){
     ST.rlv.loading=""; auditLog("جلب منسوب مجرى مرصود", rlvT(id).nm); render(); return true;
@@ -7815,7 +8212,11 @@ function secRlev(){
         +'اختبار إشارة لا مقدار (روافد أخرى تؤثر أيضاً).</div></div>';
   }
 
-  if(ST.rlv.sel==="dongola"){ s+=dongolaDatumDiagPanel(D); s+=donMonthlyHtml(D); s+=donDerivedHtml(D); s+=donSkillHtml(D); }
+  if(rlvHasCurve(ST.rlv.sel)){
+    if(ST.rlv.sel==="dongola") s+=dongolaDatumDiagPanel(D);
+    s+=donMonthlyHtml(D,ST.rlv.sel); s+=donCurveCheckHtml(ST.rlv.sel); s+=donAltHtml(ST.rlv.sel);
+    s+=donDerivedHtml(D,ST.rlv.sel); s+=donSkillHtml(D,ST.rlv.sel);
+  }
 
   s+=panel("ما الذى يفتحه هذا","الخطوة التالية إن توفّر منحنى التصريف",
     '<p class="note">بمنحنى تصريف معتمد لأى من هذه المواضع (منسوب ↔ تصرف) يتحوّل كل ما سبق إلى '
