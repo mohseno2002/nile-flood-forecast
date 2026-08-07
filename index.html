@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.57</small>
+      <small id="buildtag">build 2.58</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.57";
+var BUILD = "2.58";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -772,6 +772,7 @@ var SCENARIOS = [
 var SECTIONS = [
   {id:"command",  icon:"⌂", eyebrow:"مركز قيادة الموجة",    title:"غرفة الفيضان"},
   {id:"alti",     icon:"≋", eyebrow:"الألتيمترى",           title:"المناسيب المرصودة — بحيرات ومجرى"},
+  {id:"trust",    icon:"⚖", eyebrow:"حالة كل رقم",           title:"سجل الثقة — ما هو مرصود وما هو مُنمذَج"},
   {id:"finger",   icon:"◈", eyebrow:"مكانى–زمنى",           title:"بصمة الفيضان الحية"},
   {id:"ensemble", icon:"⌇", eyebrow:"٥٠ عضواً عبر التتبّع",  title:"المروحة الاحتمالية الحقيقية"},
   {id:"compose",  icon:"▤", eyebrow:"التراكب الكمى",         title:"مِمّ يتكوّن الوارد؟"},
@@ -5613,6 +5614,201 @@ function opsPanel(id){
     +'لا يحتاج منحنى تخزين ولا تصحيح مرجع رأسى لأنه مبنى على <b>الفرق</b> لا على القيمة المطلقة.');
 }
 
+/* =====================================================================
+   سجل الثقة — لوحة واحدة تُصنّف كل طبقة بحالتها
+   الخطر ليس نقص البيانات بل النظر إلى رقم دون معرفة نوعه.
+   ثلاثة أعمدة تحكم: النوع (مرصود/مُنمذَج/مشتقّ) · العمر · هل يصدّقه مصدر مستقل.
+   قاعدة صارمة: الطبقة غير المحمَّلة تُكتب «غير محمَّلة» ولا يُختلق لها عمر ولا حالة.
+   ===================================================================== */
+function trustAge(iso){
+  if(!iso) return null;
+  var a=Math.floor(Date.now()/864e5)-altiDayNum(iso);
+  return a<0?0:a;
+}
+function trustLastFrom(series){
+  if(!series||!series.length) return null;
+  return series[series.length-1].t;
+}
+function trustRows(){
+  var R=[], i, k;
+
+  /* ١. النموذج الأساسى */
+  var qOk = !!(ST.q && ST.q.halfa);
+  R.push({ nm:"GloFAS — التصرف المُنمذَج", kind:"model",
+    st: qOk?"محمَّلة":"غير محمَّلة",
+    last: qOk? todayISO():null, age: qOk?0:null,
+    ver: "GRRR (تحليل خارجى، ٢٠١٩–٢٠٢٣)",
+    verOk: "part",
+    note:"نموذج جريان طبيعى · لا يرى الخزانات ولا السحب · الشكل والتوقيت أوثق من المقدار" });
+
+  /* ٢. المطر */
+  R.push({ nm:"أمطار المنابع (Open-Meteo)", kind:"model",
+    st: ST.rain?"محمَّلة":"غير محمَّلة",
+    last: ST.rain? todayISO():null, age: ST.rain?0:null,
+    ver:"لا مصدر مستقل داخل التطبيق", verOk:"no",
+    note:"نموذج جوى لا رصد مطرى أرضى" });
+
+  /* ٣. الأرشيف والعتبات */
+  R.push({ nm:"الأرشيف التاريخى والعتبات", kind:"hist",
+    st: ST.thr? ("مصدرها: "+ST.thrSrc) : "غير محمَّلة",
+    last:null, age:null,
+    ver:"مشتقّة من GloFAS نفسه", verOk:"no",
+    note:"متسقة داخلياً فالإنذار النسبى يعمل — لكنها ليست عتبات وزارية" });
+
+  /* ٤. ألتيمترى البحيرات — DAHITI */
+  var lakeIds=["gerd","nasser"], lakeLast=null, lakeN=0;
+  for(i=0;i<lakeIds.length;i++){
+    var D=ST.alti.data[lakeIds[i]];
+    if(D&&D.series&&D.series.length){ lakeN++;
+      var t=trustLastFrom(D.series);
+      if(!lakeLast||t>lakeLast) lakeLast=t;
+    }
+  }
+  R.push({ nm:"ألتيمترى البحيرات — DAHITI", kind:"obs",
+    st: lakeN? (lakeN+" من ٢ محمَّلة") : "غير محمَّلة",
+    last: lakeLast, age: trustAge(lakeLast),
+    ver:"NASA GWM — مصدر مستقل تماماً", verOk: lakeN? "yes":"na",
+    note:"رصد مباشر · منسوب لا تخزين · المرجع جيودى لا مرجع المقياس" });
+
+  /* ٥. ألتيمترى المجرى */
+  var rvLast=null, rvN=0;
+  for(k in ST.rlv.data){ if(!ST.rlv.data.hasOwnProperty(k)) continue;
+    var Rw=ST.rlv.data[k];
+    if(Rw&&Rw.series&&Rw.series.length){ rvN++;
+      var t2=trustLastFrom(Rw.series);
+      if(!rvLast||t2>rvLast) rvLast=t2;
+    }
+  }
+  R.push({ nm:"ألتيمترى المجرى — DAHITI", kind:"obs",
+    st: rvN? (rvN+" محطة محمَّلة") : "غير محمَّلة",
+    last: rvLast, age: trustAge(rvLast),
+    ver:"يُقارَن بشكل التصرف المُنمذَج (ارتباط مقيس حياً)", verOk: rvN?"part":"na",
+    note:"منسوب لا تصرف · لا يحلّ المقياس إلا بمنحنى تصريف معتمد" });
+
+  /* ٦. NASA GWM */
+  var gwLast=null, gwN=0;
+  for(i=0;i<GWM_TARGETS.length;i++){
+    var G=ST.gwm.data[GWM_TARGETS[i].id];
+    if(G&&G.series&&G.series.length){ gwN++;
+      var t3=trustLastFrom(G.series);
+      if(!gwLast||t3>gwLast) gwLast=t3;
+    }
+  }
+  R.push({ nm:"NASA GWM — المصدر الثانى", kind:"obs",
+    st: gwN? (gwN+" من "+GWM_TARGETS.length+" محمَّلة") : "غير محمَّلة",
+    last: gwLast, age: trustAge(gwLast),
+    ver:"DAHITI — مصدر مستقل تماماً", verOk: gwN?"yes":"na",
+    note:"مرجع EGM2008 معلن · بعض الرصدات شبه لحظية (IGDR) قابلة للتنقيح" });
+
+  /* ٧. Sentinel-1 */
+  var sarN=0; for(k in ST.sar.data){ if(ST.sar.data.hasOwnProperty(k)) sarN++; }
+  R.push({ nm:"Sentinel-1 — الرادار", kind:"obs",
+    st: sarN? (sarN+" مقطعاً محمَّلاً") : "غير محمَّلة",
+    last:null, age:null,
+    ver:"يُقارَن بشكل التصرف المُنمذَج", verOk: sarN?"part":"na",
+    note:"مساحة مسطح لا تصرف · دورة ٦–١٢ يوماً" });
+
+  /* ٨. WaPOR */
+  var wpN=0; for(k in ST.wp.got){ if(ST.wp.got.hasOwnProperty(k) && ST.wp.got[k]!==null) wpN++; }
+  R.push({ nm:"WaPOR — البخر والفواقد", kind:"obs",
+    st: wpN? (wpN+" قراءة") : "غير محمَّلة",
+    last:null, age:null,
+    ver:"يُقارَن بالمرجع المنشور للبخر", verOk: wpN?"part":"na",
+    note:"دورية عشرية · لا تدخل التنبؤ ولا الإنذار · أقل موثوقية فوق المسطحات المفتوحة" });
+
+  /* ٩. الرأى الثانى من جوجل */
+  R.push({ nm:"تنبؤ جوجل — الرأى الثانى", kind:"model",
+    st: (ST.gfh&&ST.gfh.gauges)?"محمَّلة":"خاملة حتى وصول المفتاح",
+    last:null, age:null,
+    ver:"نموذجان لا قياس — لا يحسم بينهما إلا الأرض", verOk:"no",
+    note:"إثيوبيا خارج التغطية المنشورة فلا محطة عند الديم" });
+
+  /* ١٠. القياس الميدانى — الحقيقة الوحيدة */
+  var nObs=0; for(k in ST.obs){ if(!ST.obs.hasOwnProperty(k)) continue;
+    var st=ST.obs[k]; for(var d in st){ if(st.hasOwnProperty(d)) nObs++; } }
+  var bm=biasModel("halfa");
+  R.push({ nm:"القياس الميدانى المرصود", kind:"truth",
+    st: nObs? (nObs+" قياساً") : "لا قياس واحد",
+    last:null, age:null,
+    ver: (bm&&bm.valid)?"نموذج تصحيح صالح":"لا تصحيح — العدد أو المدى غير كافٍ",
+    verOk: (bm&&bm.valid)?"yes":"no",
+    note:"هذا وحده يحوّل سجل الأداء من مؤشر ثبات إلى مؤشر دقة، ويُنهى المعايرة التقديرية" });
+
+  return R;
+}
+function trustKindPill(k){
+  var m={ obs:["green","مرصود"], truth:["green","قياس أرضى"],
+          model:["lake","نمذجة"], hist:["sand","تاريخى"], der:["sand","مشتقّ"] };
+  var a=m[k]||m.model;
+  return '<span class="pill '+a[0]+'">'+a[1]+'</span>';
+}
+function trustVerPill(v){
+  var m={ yes:["green","مصدر مستقل"], part:["sand","مقارنة جزئية"],
+          no:["danger","بلا تصديق"], na:["lake","غير محمَّلة"] };
+  var a=m[v]||m.na;
+  return '<span class="pill '+a[0]+'">'+a[1]+'</span>';
+}
+function trustAgePill(a){
+  if(a===null||a===undefined) return '<span class="pill lake">—</span>';
+  var c = a<=2?"green":(a<=14?"sand":(a<=45?"sand":"danger"));
+  return '<span class="pill '+c+'">'+nf(a,0)+' يوماً</span>';
+}
+function secTrust(){
+  var R=trustRows(), rows="", i, nObs=0, nVer=0;
+  for(i=0;i<R.length;i++){
+    var r=R[i];
+    if(r.kind==="obs"||r.kind==="truth") nObs++;
+    if(r.verOk==="yes") nVer++;
+    rows+='<tr><td><b>'+esc(r.nm)+'</b>'
+      +'<div style="font-size:9px;color:var(--muted)">'+esc(r.note)+'</div></td>'
+      +'<td>'+trustKindPill(r.kind)+'</td>'
+      +'<td>'+esc(r.st)+'</td>'
+      +'<td>'+(r.last?esc(r.last):"—")+'</td>'
+      +'<td>'+trustAgePill(r.age)+'</td>'
+      +'<td>'+trustVerPill(r.verOk)
+      +'<div style="font-size:9px;color:var(--muted)">'+esc(r.ver)+'</div></td></tr>';
+  }
+  var X=gwmCross(), XN=null;
+  try{ var sv=ST.gwm.sel; ST.gwm.sel="nasser"; XN=gwmCross(); ST.gwm.sel=sv; }catch(e){}
+
+  var s=panel("حالة كل رقم","سجل الثقة — النوع والعمر والتصديق المستقل",
+    '<div class="grid g4">'
+    +kpi("◉","green","طبقات رصد", nObs,"من "+R.length,"الباقى نمذجة أو تاريخى")
+    +kpi("✓", nVer?"green":"danger","لها مصدر مستقل", nVer,"طبقة","تصديق كامل لا جزئى")
+    +kpi("⚑","danger","قياس أرضى", (function(){ var n=0,k,d; for(k in ST.obs){ if(!ST.obs.hasOwnProperty(k)) continue; for(d in ST.obs[k]) if(ST.obs[k].hasOwnProperty(d)) n++; } return n; })(),"قياساً","الحقيقة الوحيدة")
+    +kpi("⚖","", "التصنيف", R.length,"طبقة","مرصود · نمذجة · تاريخى")
+    +'</div>'
+    +'<div class="tb-wrap" style="margin-top:15px"><table class="tb"><thead><tr>'
+    +'<th>الطبقة</th><th>النوع</th><th>الحالة</th><th>آخر رصدة</th><th>العمر</th><th>التصديق المستقل</th>'
+    +'</tr></thead><tbody>'+rows+'</tbody></table></div>',
+    'الغرض ليس عدّ الطبقات بل <b>ألا يُقرأ رقم دون معرفة نوعه</b>. '
+    +'«مرصود» رصد مباشر · «نمذجة» ناتج نموذج · «تاريخى» مشتقّ من أرشيف · '
+    +'و«التصديق المستقل» يعنى وجود مصدر ثانٍ لا يشترك مع الأول فى بعثة ولا معالجة.');
+
+  if(X&&!X.few)
+    s+='<div class="banner '+(Math.abs(X.mean)<=0.5?"ok":"warn")+'" style="margin-top:12px"><span>✓</span><div>'
+      +'<b>تصديق قائم فعلاً — النهضة:</b> متوسط الفارق بين DAHITI وNASA '
+      +sgn(X.mean,2)+' م على '+X.n+' زوج داخل ٧ أيام. '
+      +'مصدران لا يشتركان فى شىء يتفقان على المنسوب المطلق.</div></div>';
+  if(XN&&!XN.few)
+    s+='<div class="banner '+(Math.abs(XN.mean)<=0.5?"ok":"warn")+'" style="margin-top:10px"><span>✓</span><div>'
+      +'<b>تصديق قائم فعلاً — ناصر:</b> متوسط الفارق '+sgn(XN.mean,2)+' م على '+XN.n+' زوج.</div></div>';
+
+  s+='<div class="banner danger" style="margin-top:12px"><span>⚑</span><div>'
+    +'<b>الثغرة الحاكمة التى لا يسدّها أى مصدر خارجى:</b> '
+    +'كل ما سبق منسوب أو نموذج. **لا قياس تصرف أرضى واحد داخل التطبيق**. '
+    +'وقد فُحصت البدائل وسقطت: <b>GRDC</b> ينتهى عند ١٩٨٤ وشهرياً ويمنع إعادة النشر · '
+    +'<b>GRRR</b> بلا CORS وينتهى ٢٠٢٣ · <b>الألتيمترى</b> يعطى منسوباً لا تصرفاً. '
+    +'فرقم واحد صحيح من سجل الوزارة عند حلفا بتاريخه يفعل ما لا يفعله أى مصدر عالمى.</div></div>';
+
+  s+='<div class="banner info" style="margin-top:10px"><span>ℹ</span><div>'
+    +'<b>كيف يُقرأ العمر.</b> الأخضر يومان فأقل · الرملى حتى ٤٥ يوماً · الأحمر فوقها. '
+    +'وتباعد رصدات الألتيمترى <b>طبيعى</b> (دورة المدار ١٠–٢١ يوماً + زمن النشر) '
+    +'فالأحمر هناك يعنى «قديمة» لا «معطّلة». والطبقة غير المحمَّلة تُكتب كذلك '
+    +'<b>ولا يُختلق لها عمر ولا حالة</b>.</div></div>';
+  return s;
+}
+
 function secGwm(){
   var T=gwmTarget(ST.gwm.sel), L=gwmLast(T.id), X=gwmCross(), i;
   var sel='<div class="ctrl"><label>الهدف:</label><select id="gwm-sel">';
@@ -7113,6 +7309,7 @@ function render(){
   var c=$("content"); if(!c) return;
   var h="";
   if(ST.sec==="command")       h=secCommand();
+  else if(ST.sec==="trust")    h=secTrust();
   else if(ST.sec==="finger")   h=secFinger();
   else if(ST.sec==="ensemble") h=secEnsemble();
   else if(ST.sec==="compose")  h=secCompose();
