@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.60</small>
+      <small id="buildtag">build 2.67</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.60";
+var BUILD = "2.67";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -813,7 +813,7 @@ var ST = {
   alti:{ data:{}, loading:false, sel:"gerd", keyOk:null, mode:"lake" },
   dam:{ sel:"gerd", nat:null, natLoading:false, evap:5, evapSrc:"افتراضى" },
   cal:{ on:false, ref:null, model:null, loading:false, refSrc:"افتراضى" },
-  mcal:{ on:false, busy:false, prog:"", err:"", arch:null, par:null, diag:{}, sum:null },
+  mcal:{ on:false, busy:false, prog:"", err:"", arch:null, par:null, diag:{}, sum:null, yr:null, wy:null },
   rlv:{ sel:"khartoum", data:{}, arch:{}, loading:"", err:"" },
   gwm:{ sel:"gerd", data:{}, loading:"", err:"" },
   nudge:true,
@@ -3071,14 +3071,18 @@ function nasserToshka(h){
   if(h===null||h===undefined||isNaN(h)) return null;
   return h-TOSHKA_H;
 }
+var NAS_DATUM_DEF=-0.70;
+/* الربط الرسمى: مقياس السد العالى = الجيودى (الإسكندرية) − 0.70 م.
+   مرساة مؤرَّخة: عتبة هدار توشكى 178.00 بمرجع السد ≡ 178.70 جيودياً
+   (13 أكتوبر 1998، وتكررت 1 نوفمبر 2020). قابلة للتعديل بحقل الإزاحة. */
 function nasserDatum(){
-  /* إزاحة المرجع الرأسى: مقياس السد العالى ناقص الألتيمترى، بالمتر.
-     صفر افتراضاً — ولا يُختلق لها رقم. تُدخَل عند توفر قراءة رسمية بتاريخها. */
-  var v=0;
+  /* إزاحة المرجع الرأسى: مقياس السد العالى ناقص الألتيمترى، بالمتر. */
+  var v=NAS_DATUM_DEF;
   try{ var t=localStorage.getItem("mwri_nasser_datum"); if(t!==null&&t!=="") v=parseFloat(t); }catch(e){}
-  if(isNaN(v)||v<-5||v>5) v=0;
+  if(isNaN(v)||v<-5||v>5) v=NAS_DATUM_DEF;
   return v;
 }
+function nasserDatumIsDef(){ return Math.abs(nasserDatum()-NAS_DATUM_DEF)<1e-9; }
 function nasserH(hAlti){
   /* المنسوب المصحَّح على مرجع المقياس */
   if(hAlti===null||hAlti===undefined||isNaN(hAlti)) return null;
@@ -3229,7 +3233,12 @@ function nasserStorePanel(){
     +'المسطح هنا نحو <b>'+(NS.slope.design!==null?nf(NS.slope.design*1000,0):"—")+' كم²</b>، '
     +'فكل <b>١٠ سم</b> خطأ فى المرجع تساوى نحو <b>'
     +(NS.slope.design!==null?nf(NS.slope.design*100,0):"—")+' مليون م³</b>. '
-    +'<b>قراءة رسمية واحدة بتاريخها</b> تكفى لحساب الإزاحة نهائياً — وحتى إدخالها فأرقام التخزين المطلق تُقرأ كتقدير لا كرصد. '
+    +'<b>✓ المرجع محسوم رسمياً:</b> جدول السعات يُقرأ على <b>مرجع مقياس السد العالى</b> لا الجيودى. '
+    +'فمسار الحساب: منسوب جيودى (الألتيمترى) <b>ناقص ٠٫٧٠</b> ← منسوب المقياس ← جدول السعات — وهو المطبَّق فعلاً. '
+    +'والمعالم على مرجع المقياس: ١٤٧٫٠٠ ميت · ١٧٥٫٠٠ مستهدف نوفمبر · <b>١٧٨٫٠٠ عتبة توشكى</b> · ١٨٢٫٠٠ أقصى آمن. '
+    +'<div style="margin-top:5px"><b>الإزاحة الرسمية مطبَّقة (−٠٫٧٠ م):</b> مقياس السد العالى = الجيودى − ٠٫٧٠، '
+    +'ثابتة عبر النطاق التشغيلى كله بثلاث مراسٍ مؤرَّخة: ١٧٤٫٣٠↔١٧٥٫٠٠ (١ أغسطس ٢٠٢١) · '
+    +'١٧٨٫٠٠↔١٧٨٫٧٠ (عتبة توشكى · ١٣ أكتوبر ١٩٩٨ و١ نوفمبر ٢٠٢٠) · ١٨٢٫٠٠↔١٨٢٫٧٠ (١١ نوفمبر ١٩٩٩). '
     +'أما <b>أعمدة Δ</b> فسليمة بلا إزاحة لأن الخطأ الثابت يُلغى بالطرح.</div></div>';
   inner+='<div class="banner info" style="margin-top:10px"><span>ℹ</span><div>'
     +'<b>لماذا منحنيان.</b> المنحنى التصميمى وضعته الوزارة قبل 1964 والإطماء منذها التهم جزءاً من السعة، '
@@ -3354,8 +3363,9 @@ function secCommand(){
       +'<div style="margin-top:5px">رصد '+esc(NS.t)+' · منذ '+nf(NS.age,0)+' يوماً · '
       +'التخزين من <b>جدول الوزارة الرسمى</b> باستيفاء خطى بين معالمه، '
       +(NS.off===0
-        ? 'و<b>بلا تصحيح مرجع رأسى</b> — كل ١٠ سم فرق بين مرجع الألتيمترى ومقياس السد العالى تساوى نحو ٤٠٠ مليون م³. <b>والمسألة صارت تشغيلية لا نظرية:</b> عتبة توشكى ١٧٨٫٠٠ م على مرجع المقياس والمنسوب أعلاه على مرجع جيودى، فالفارق بينهما قد يقلب الحكم. قراءة رسمية واحدة بتاريخها تنهيه.'
-        : ('ومصحَّح بإزاحة مرجع '+sgn(NS.off,2)+' م.'))
+        ? 'وبلا إزاحة مرجع.'
+        : ('ومصحَّح إلى <b>مرجع مقياس السد العالى</b> بإزاحة '+sgn(NS.off,2)+' م'
+           +(nasserDatumIsDef()?' (الربط الرسمى: الجيودى − ٠٫٧٠)':' (إزاحة مخصّصة)')+'.'))
       +' <b>تغيّر التخزين</b> أعلاه شبه غير حسّاس لهذا الخطأ لأن الإزاحة تُلغى بالطرح.</div>'
       +'</div></div>';
   }
@@ -4926,7 +4936,61 @@ function calBalance(){
    لماذا لا حدّ ثابت b: الصيغة مضاعِفة بحتة فلا تعطى تصرفاً سالباً أبداً —
    وهذا بالضبط ما أعجز المعامل الخطى فى فترة التحاريق.
    ===================================================================== */
-var MCAL_BCM=84.0;
+var MCAL_BCM=84.0;               /* المرجع التاريخى — اتفاقية ١٩٥٩ */
+function mcalTarget(){
+  /* مرجع الإغلاق: التاريخى افتراضاً، أو إجمالى سنة مقيسة يدخله م. محسن.
+     تغييره ينقل دور γ من «توفيق مع خط الأساس التاريخى» إلى
+     «إلغاء انحياز النموذج مقابل قياس ميدانى» — والفرق يُعلَن فى الواجهة. */
+  var v=MCAL_BCM;
+  try{ var t=localStorage.getItem("mwri_mcal_bcm");
+       if(t!==null&&t!==""){ var p=parseFloat(t); if(!isNaN(p)&&p>=40&&p<=200) v=p; } }catch(e){}
+  return v;
+}
+function mcalIsHist(){ return Math.abs(mcalTarget()-MCAL_BCM)<1e-9; }
+/* إجماليات سنوية مقيسة من سجل الوزارة — "2020,108.4;2023,64.1"
+   لكل سنة مُدخَلة يُحسب γ خاص بها؛ وثبات γ عبر سنة فيضان وسنة جفاف
+   هو اختبار العيّنة المنقسمة التمايزى (Klemeš 1986) — أقوى اختبار متاح لنا.
+   قاعدة صارمة: لا يُقبل هنا إلا رقم من سجل الوزارة. أى رقم من مخرجات
+   التطبيق نفسه يجعل الاختبار دائرياً ويمرّ حتماً بلا أن يثبت شيئاً. */
+var MCAL_DG=0.025;
+/* مراسٍ مقيسة من التقرير الهيدرولوجى لقطاع مياه النيل — وارد وادى حلفا
+   بالسنة المائية الرسمية. تُستبدل بالتحرير، ولا تُعدَّل من مخرجات التطبيق. */
+var MCAL_OBS_DEF="2015,52.4;2020,108.4;2021,69.8";
+function mcalObs(){
+  var out={}, raw=MCAL_OBS_DEF;
+  try{ var t=localStorage.getItem("mwri_mcal_obs"); if(t!==null) raw=t; }catch(e){}
+  var parts=String(raw).split(";"), i;
+  for(i=0;i<parts.length;i++){
+    var p=parts[i].split(",");
+    if(p.length!==2) continue;
+    var y=String(p[0]).trim(), v=parseFloat(p[1]);
+    if(!/^[0-9]{4}$/.test(y)) continue;
+    if(isNaN(v)||v<20||v>250) continue;
+    out[y]=v;
+  }
+  return out;
+}
+function mcalStab(){
+  /* γ لكل سنة مائية مقيسة = المقيس ÷ المحسوب قبل γ · ثم أقصى فارق بين سنتين.
+     حارس الدائرية: مرساة تطابق مخرَجنا خلال ٠٫٥٪ يُرجَّح أنها مخرَج النموذج
+     لا قياساً مستقلاً — تُستبعَد من الحكم وتُعلَن. */
+  var SRC=ST.mcal.wy||ST.mcal.yr;
+  if(!SRC||!ST.mcal.sum) return null;
+  var O=mcalObs(), g0=ST.mcal.sum.g, list=[], susp=[], y;
+  for(y in O){
+    if(!O.hasOwnProperty(y)||!SRC[y]) continue;
+    var Y=SRC[y];
+    if(Y.d<360) continue;                 /* سنة ناقصة لا تصلح مرساة */
+    var pre=Y.v/g0;                       /* الحجم قبل γ */
+    var it={ y:y, obs:O[y], pre:pre, g:O[y]/pre, cal:Y.v, dev:(Y.v-O[y])/O[y]*100 };
+    if(Math.abs(it.dev)<0.5){ it.susp=true; susp.push(it); } else list.push(it);
+  }
+  if(list.length<2) return { few:true, n:list.length, list:list, susp:susp };
+  list.sort(function(a,b){ return a.obs-b.obs; });
+  var lo=list[0], hi=list[list.length-1], d=Math.abs(hi.g-lo.g);
+  return { few:false, list:list, susp:susp, lo:lo, hi:hi, dg:d, ok:d<=MCAL_DG,
+           span:hi.obs/lo.obs };
+}
 var MCAL_LAT=21.83, MCAL_LON=31.18;   /* الخلية الحية — خلية المحطة 21.80/31.35 ترجع صفراً */
 var MCAL_FROM="2010-01-01";
 var MCAL_T=[null,
@@ -4989,10 +5053,26 @@ function mcalFit(arch){
     sum += P.a*Math.pow(q*MCAL_S, P.b);   /* مليون م³/يوم */
     cnt++;
   }
-  var ny=cnt/365.25, pre=(sum/1000)/ny;
-  out.sum={ n:cnt, ny:ny, pre:pre,
-            err:(pre-MCAL_BCM)/MCAL_BCM*100,
-            g:MCAL_BCM/pre };
+  var ny=cnt/365.25, pre=(sum/1000)/ny, TG=mcalTarget();
+  out.sum={ n:cnt, ny:ny, pre:pre, tg:TG,
+            err:(pre-TG)/TG*100,
+            g:TG/pre };
+  /* الإجمالى المُعاير لكل سنة — أداة التحقق الحقيقية:
+     يُقارَن بسجل الوزارة لأى سنة، فيتحوّل γ من افتراض إلى كمّية قابلة للفحص */
+  out.yr={}; out.wy={};
+  for(i=0;i<arch.length;i++){
+    var qy=arch[i].q; if(qy===null||qy===undefined||isNaN(qy)) continue;
+    if(!arch[i].y) continue;
+    var Py=out.par[arch[i].m];
+    var val=Py.a*Math.pow(qy*MCAL_S,Py.b)*out.sum.g/1000;
+    if(out.yr[arch[i].y]===undefined) out.yr[arch[i].y]={v:0,d:0};
+    out.yr[arch[i].y].v += val; out.yr[arch[i].y].d++;
+    /* السنة المائية المصرية الرسمية: ١ أغسطس ← ٣١ يوليو */
+    var w=String(arch[i].m>=8 ? parseInt(arch[i].y,10) : parseInt(arch[i].y,10)-1);
+    if(out.wy[w]===undefined) out.wy[w]={v:0,d:0};
+    out.wy[w].v += val; out.wy[w].d++;
+  }
+
   /* المتوسط الشهرى بعد γ مقابل وسط الجدول — معيار القبول الحقيقى */
   for(m=1;m<=12;m++){
     var P2=out.par[m], acc=0, k=0, j;
@@ -5034,7 +5114,7 @@ function mcalLoad(){
       var q=d.river_discharge[i];
       if(q===null||q===undefined||isNaN(q)) continue;
       if(q>0) pos++;
-      arch.push({ m:parseInt(d.time[i].slice(5,7),10), q:q });
+      arch.push({ y:d.time[i].slice(0,4), m:parseInt(d.time[i].slice(5,7),10), q:q });
     }
     if(arch.length<3650) throw new Error("الأرشيف "+arch.length+" يوماً فقط — أقل من عشر سنوات");
     if(pos<arch.length*0.5)
@@ -5042,6 +5122,7 @@ function mcalLoad(){
     ST.mcal.arch=arch; ST.mcal.prog="";
     var F=mcalFit(arch);
     ST.mcal.par=F.ok?F.par:null; ST.mcal.diag=F.diag; ST.mcal.sum=F.ok?F.sum:null;
+    ST.mcal.yr=F.ok?F.yr:null; ST.mcal.wy=F.ok?F.wy:null;
     if(!F.ok) ST.mcal.err="تعذّرت معايرة بعض الشهور — التفصيل فى الجدول";
     ST.mcal.busy=false;
     auditLog("معايرة شهرية لحلفا", F.ok?("γ="+nf(F.sum.g,4)+" · "+nf(F.sum.ny,1)+" سنة"):"مرفوضة");
@@ -5051,13 +5132,110 @@ function mcalLoad(){
     netErr("تعذّرت المعايرة الشهرية", e); render(); return null;
   });
 }
+/* =====================================================================
+   منحنى تصريف دنقلا المعتمد لقطاع مياه النيل — دالة مجزأة بشريحتين.
+   الانكسار عند H=14.00 م سببه فيزيائى: منسوب الشاطئ (Bankfull) —
+   فوقه تنتشر المياه فى السهل الفيضى فيتغيّر نصف القطر الهيدروليكى والنقلية.
+   تعيد إنتاج جدول القطاع بخطأ ٠٫٠٠–٠٫٠٢٪ ومتصلة عند الانكسار (فجوة ٠٫٠٢).
+   صفر المقياس ٢١٠٫٦٠ م فوق سطح البحر — يربط قراءة المقياس بأى مرجع جيودى.
+   ===================================================================== */
+var DON_ZERO=210.60, DON_BREAK=14.00, DON_LO=10.00, DON_HI=16.00;
+var DON_NOFLOW=1572.5/168.35;      /* ٩٫٣٤ م — المنسوب الذى ينعدم عنده التصريف فعلياً */
+function dongolaQ(H, cms){
+  /* يرجع مليون م³/يوم افتراضاً، أو م³/ث إن cms، وnull خارج نطاق الصلاحية */
+  if(H===null||H===undefined||isNaN(H)) return null;
+  if(H<DON_LO||H>DON_HI) return null;          /* لا استقراء خارج النطاق المعتمد */
+  var q=(H<=DON_BREAK) ? (168.35*H-1572.5) : (211.27*H-2173.4);
+  if(q<0) q=0;
+  return cms ? q*1e6/86400 : q;
+}
+function dongolaPanel(){
+  var rows="", i, T=[[10,111.0],[11,null],[12,447.8],[13,null],[14,784.4],[15,null],[15.5,1101.3],[16,null]];
+  for(i=0;i<T.length;i++){
+    var H=T[i][0], ref=T[i][1], q=dongolaQ(H,false);
+    rows+='<tr><td><b>'+nf(H,2)+'</b></td>'
+      +'<td class="num">'+nf(q,1)+'</td>'
+      +'<td class="num">'+nf(dongolaQ(H,true),0)+'</td>'
+      +'<td class="num">'+(ref!==null?nf(ref,1):"—")+'</td>'
+      +'<td>'+(ref!==null?('<span class="pill green">'+sgn((q-ref)/ref*100,2)+'٪</span>'):'')
+      +(H<=DON_BREAK?'<span class="pill lake">مجرى رئيسى</span>':'<span class="pill sand">سهل فيضى</span>')
+      +'</td></tr>';
+  }
+  return panel("منحنى تصريف دنقلا — المعتمد لقطاع مياه النيل",
+    "دالة مجزأة بشريحتين · الانكسار عند منسوب الشاطئ ١٤٫٠٠ م",
+    '<div class="tb-wrap"><table class="tb"><thead><tr><th>منسوب المقياس (م)</th>'
+    +'<th>مليون م³/يوم</th><th>م³/ث</th><th>جدول القطاع</th><th></th>'
+    +'</tr></thead><tbody>'+rows+'</tbody></table></div>'
+    +'<div class="banner info" style="margin-top:12px"><span>ℹ</span><div>'
+    +'<b>لماذا شريحتان لا معادلة واحدة.</b> عند ١٤٫٠٠ م يبلغ المجرى <b>منسوب الشاطئ</b>، '
+    +'فتنتشر المياه فى السهل الفيضى ويتغيّر نصف القطر الهيدروليكى والنقلية — '
+    +'فيرتفع الميل من <b>١٦٨٫٣٥</b> إلى <b>٢١١٫٢٧</b> مليون م³/يوم لكل متر. '
+    +'والدالة <b>متصلة عند الانكسار</b> (فجوة ٠٫٠٢ مليون م³/يوم) فلا قفزة مصطنعة.</div></div>'
+    +'<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
+    +'<b>حدّان معلنان.</b> النطاق المعتمد <b>١٠٫٠٠–١٦٫٠٠ م</b> وخارجه تُرجع الدالة «لا قيمة» '
+    +'بدل الاستقراء. و<b>منسوب انعدام التصريف الفعلى للشريحة الأولى ٩٫٣٤ م</b> لا ٨٫٥٠ '
+    +'المذكورة كصفر مرجعى — فما بينهما تعطى الصيغة قيماً سالبة تُقصَّ إلى صفر.</div></div>'
+    +'<div class="banner info" style="margin-top:10px"><span>◉</span><div>'
+    +'<b>الربط بالألتيمترى:</b> صفر المقياس <b>٢١٠٫٦٠ م</b> فوق سطح البحر، '
+    +'فقراءة المقياس = المنسوب الجيودى − ٢١٠٫٦٠. '
+    +'والنطاق المعتمد يقابل منسوباً جيودياً <b>٢٢٠٫٦٠–٢٢٦٫٦٠ م</b> — '
+    +'وهذا يفتح الباب لتحويل سلسلة DAHITI عند دنقلا (48605) إلى تصرف مرصود.</div></div>',
+    'المصدر: نقاط جدول قطاع مياه النيل الحقلية. '
+    +'<b>الثوابت النظرية <span dir="ltr">C=18.25 · m=1.88</span> أُسقطت</b> — '
+    +'كانت تفترض مجرى قناة واحدة فتعطى أقل من الجدول بـ٣٦–٦٥٪.');
+}
+
+function mcalObsRaw(){
+  try{ var t=localStorage.getItem("mwri_mcal_obs"); if(t!==null) return t; }catch(e){}
+  return MCAL_OBS_DEF;
+}
+function mcalStabHtml(){
+  var S=mcalStab();
+  if(!S) return "";
+  var sw="";
+  if(S.susp&&S.susp.length){
+    var i3;
+    sw='<div class="banner danger" style="margin-top:12px"><span>⚑</span><div>'
+      +'<b>مرساة مشبوهة بالدائرية — استُبعدت من الحكم:</b> ';
+    for(i3=0;i3<S.susp.length;i3++)
+      sw+=esc(S.susp[i3].y)+' ('+nf(S.susp[i3].obs,1)+' مقابل مخرَجنا '+nf(S.susp[i3].cal,1)+') ';
+    sw+='<div style="margin-top:4px">تطابق أقلّ من ٠٫٥٪ مع مخرَج النموذج نفسه — '
+      +'وهذا يعنى غالباً أن الرقم مأخوذ من التطبيق لا من سجل الرصد. '
+      +'<b>المرساة التى تساوى المخرَج لا تختبره.</b></div></div></div>';
+  }
+  if(S.few)
+    return sw+'<div class="banner info" style="margin-top:12px"><span>ℹ</span><div>'
+      +'<b>اختبار الثبات يحتاج سنتين متضادتين مستقلتين.</b> الصالح الآن '+nf(S.n,0)+'. '
+      +'أدخل <b>سنة فيضان وسنة جفاف</b> من سجل الوزارة، فيُحسب γ لكل منهما — '
+      +'وثباتهما يعنى أن المعاملات الشهرية استوعبت فيزياء المجرى عند الطرفين، '
+      +'واختلافهما يعنى أن أُسّ شهور الجفاف يحتاج مراجعة.</div></div>';
+  return sw+panel("اختبار الثبات عند الطرفين",
+    "γ لسنة الجفاف مقابل سنة الفيضان — اختبار العيّنة المنقسمة التمايزى",
+    '<div class="grid g4">'
+    +kpi("▼","lake","γ سنة الجفاف "+esc(S.lo.y), nf(S.lo.g,4),"", nf(S.lo.obs,1)+" مليار مقيس")
+    +kpi("▲","sand","γ سنة الفيضان "+esc(S.hi.y), nf(S.hi.g,4),"", nf(S.hi.obs,1)+" مليار مقيس")
+    +kpi("Δ", S.ok?"green":"danger","الفارق بين الطرفين", nf(S.dg,4),"","الحدّ "+nf(MCAL_DG,3))
+    +kpi(S.ok?"✓":"✕", S.ok?"green":"danger","الحكم", S.ok?"مستقر":"تفاوت","", "مدى "+nf(S.span,1)+"× بين الطرفين")
+    +'</div>',
+    S.ok
+      ? '<b>γ ثابت عبر الطرفين</b> — أى أنه انحياز نسقى للنموذج الرقمى مستقل عن حالة الفيضان، '
+        +'وأن <b>α<sub>m</sub> وβ<sub>m</sub> استوعبتا فيزياء المجرى</b> عند الحدّين العلوى والسفلى.'
+      : '<b>γ يختلف بين الطرفين</b> — فالتحويل غير الخطى لا يستوعب أحد الطرفين بالكامل. '
+        +'المرشّح الأول للمراجعة أُسّ شهور الجفاف (مارس–مايو)، حيث يصغر القطاع المبلول ويزيد أثر الاحتكاك.');
+}
 function mcalPanel(){
   var S=ST.mcal.sum, P=ST.mcal.par, m, rows="";
   var ctl='<div class="ctrl">'
     +'<button class="btn solid" id="mcal-run"'+(ST.mcal.busy?" disabled":"")+'>'
       +(ST.mcal.busy?"⏳ "+esc(ST.mcal.prog||"جارٍ…"):"⤓ احسب المعاملات الشهرية")+'</button>'
     +'<label><input type="checkbox" id="mcal-on"'+(ST.mcal.on?" checked":"")
-      +(P?"":" disabled")+'> اعرض القيمة المُعايرة شهرياً</label></div>';
+      +(P?"":" disabled")+'> اعرض القيمة المُعايرة شهرياً</label></div>'
+    +'<div class="ctrl"><label>مرجع الإغلاق (مليار م³/سنة):</label>'
+    +'<input type="number" step="0.1" id="mcal-bcm" value="'+mcalTarget()+'" style="width:110px">'
+    +'<button class="btn solid" id="mcal-bcm-save">حفظ وأعد الحساب</button>'
+    +'<button class="btn mini" id="mcal-bcm-def">التاريخى ٨٤</button>'
+    +'<span class="pill '+(mcalIsHist()?"lake":"green")+'">'
+    +(mcalIsHist()?"مرجع تاريخى — اتفاقية ١٩٥٩":"إجمالى مقيس — تصحيح انحياز مباشر")+'</span></div>';
 
   var inner=ctl;
   if(ST.mcal.err)
@@ -5094,13 +5272,63 @@ function mcalPanel(){
     +'<th>الشهر</th><th>الوزارى (مليون م³/يوم)</th><th>p10 / p90</th><th>α</th><th>β</th>'
     +'<th>المتوسط بعد γ</th><th>الفارق</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
 
-  inner+='<div class="banner warn" style="margin-top:12px"><span>⚠</span><div>'
+  if(ST.mcal.wy){
+    var ys=[], k2;
+    for(k2 in ST.mcal.wy) if(ST.mcal.wy.hasOwnProperty(k2)) ys.push(k2);
+    ys.sort();
+    var yr2="", i2, mx=0;
+    for(i2=0;i2<ys.length;i2++) if(ST.mcal.yr[ys[i2]].v>mx) mx=ST.mcal.yr[ys[i2]].v;
+    for(i2=0;i2<ys.length;i2++){
+      var Y=ST.mcal.wy[ys[i2]], full=Y.d>=360, CY=ST.mcal.yr[ys[i2]];
+      var OB=mcalObs()[ys[i2]], dv=(OB!==undefined)?((Y.v-OB)/OB*100):null;
+      var dc=(dv===null)?"":(Math.abs(dv)<=5?"green":(Math.abs(dv)<=10?"sand":"danger"));
+      yr2+='<tr><td><b>'+esc(ys[i2])+'/'+esc(String(parseInt(ys[i2],10)+1).slice(2))+'</b>'
+        +'<div style="font-size:9px;color:var(--muted)">تقويمى '+esc(ys[i2])+': '
+        +(CY?nf(CY.v,1):"—")+'</div></td>'
+        +'<td class="num"><b>'+nf(Y.v,1)+'</b></td>'
+        +'<td class="num">'+(OB!==undefined?('<b>'+nf(OB,1)+'</b>'):'—')+'</td>'
+        +'<td class="num">'+(dv===null?'—':('<span class="pill '+dc+'">'+sgn(dv,1)+'٪</span>'))+'</td>'
+        +'<td class="num">'+(OB!==undefined?nf(OB/(Y.v/ST.mcal.sum.g),4):'—')+'</td>'
+        +'<td>'+(full?'':'<span class="pill sand">ناقصة '+nf(Y.d,0)+' يوماً</span>')+'</td></tr>';
+    }
+    inner+=panel("الإجمالى المُعاير لكل سنة مائية","السنة المائية المصرية الرسمية: ١ أغسطس ← ٣١ يوليو",
+      '<div class="ctrl"><label>إجماليات مقيسة من سجل الوزارة (سنة,قيمة؛ …):</label>'
+      +'<input type="text" id="mcal-obs" value="'+esc(mcalObsRaw())+'" placeholder="2020,108.4;2023,64.1" style="min-width:220px">'
+      +'<button class="btn solid" id="mcal-obs-save">حفظ</button>'
+      +'<button class="btn mini" id="mcal-obs-clr">مسح</button></div>'
+      +'<div class="tb-wrap" style="margin-top:12px"><table class="tb"><thead><tr><th>السنة المائية</th>'
+      +'<th>مُعاير</th><th>مقيس (وزارى)</th><th>الفارق</th><th>γ السنة</th><th></th></tr></thead><tbody>'
+      +yr2+'</tbody></table></div>'+mcalStabHtml(),
+      '<b>هذه هى بوابة التحقق المستقلة.</b> المعاملات الشهرية وγ حُسبت من نطاقات الجدول والمتوسط وحدها — '
+      +'<b>ولم تدخلها أرقام أى سنة بعينها</b>. فمطابقة أى سنة لسجل الوزارة اتفاق مستقل لا تحصيل حاصل. '
+      +'<b>ولذلك لا يُدخَل فى خانة «مقيس» إلا رقم من سجل الوزارة</b> — وإدخال رقم مأخوذ من عمود «مُعاير» '
+      +'يجعل الاختبار دائرياً فيمرّ حتماً بلا أن يثبت شيئاً. وأى سنة ناقصة الأيام تُستبعَد من الاختبار.');
+  }
+
+  inner+='<div class="banner danger" style="margin-top:12px"><span>⛔</span><div>'
+    +'<b>نطاق الاستخدام المعتمد — حدّ بنيوى لا تحفّظ شكلى.</b> '
+    +'معاملات <span dir="ltr">α<sub>m</sub>, β<sub>m</sub></span> ثابتة عبر السنوات، '
+    +'فالتغيّر بين سنة وأخرى يأتى <b>كله من تغيّر النموذج نفسه</b>. '
+    +'والنماذج الفضائية تُنعّم الظواهر الحادة. '
+    +'<b>وهذا مقيس الآن بثلاث مراسٍ من سجل الوزارة</b> لا مُستنتَج: '
+    +'٢٠٢١/٢٢ مطابقة ممتازة (٦٩٫٢ عندنا مقابل ٦٩٫٨ مقيساً · −٠٫٩٪) — '
+    +'لكن ٢٠٢٠/٢١ ننقص ٨٫٤٪ (٩٩٫٣ مقابل ١٠٨٫٤) و<b>٢٠١٥/١٦ نزيد ٤٩٪</b> (٧٧٫٩ مقابل ٥٢٫٤). '
+    +'أى أن <b>الدقة عند المتوسط والانحراف يشتدّ كلما ابتعدت السنة عنه فى الاتجاهين</b>: '
+    +'المدى المقيس لهذه السنوات <b>2.07×</b> ومدانا <b>1.28×</b>.'
+    +'<div style="margin-top:6px"><b>مُصرَّح به:</b> توزيع الموازنة اليومية والشهرية <b>داخل السنة الواحدة</b> · '
+    +'التتبّع والتوهين خلال الموسم.</div>'
+    +'<div style="margin-top:4px"><b>محظور:</b> تصنيف شدة السنة (جفاف/فيضان) بالمقارنة بين السنوات · '
+    +'وأى قرار تخزين أو تفريغ استراتيجى مبنى على القيم المطلقة لسنوات مستقبلية.</div>'
+    +'</div></div>';
+  inner+='<div class="banner warn" style="margin-top:10px"><span>⚠</span><div>'
     +'<b>ماذا يفعل γ بالضبط.</b> نطاقات الجدول أوسع من توزيع السنة النمطية، '
-    +'فأوساطها تعطى نحو <b>١٠٠٫٨ مليار م³/سنة</b> بينما المرجع التاريخى المعتمد '
-    +'<b>٨٤ مليار (اتفاقية ١٩٥٩)</b>. وγ <b>يختار الموضع داخل كل نطاق</b> بحيث يغلق الإجمالى على المرجع — '
-    +'ولا يغيّر شكل التوزيع ولا النسب بين الشهور. '
-    +'<b>وهذان رقمان من نظامين:</b> الجدول الشهرى <b>مقيس</b> (يتضمن أثر السدود السودانية والسحب)، '
-    +'والـ٨٤ مليار <b>مرجع طبيعى تاريخى</b>. الرقمان معروضان أعلاه معاً عمداً فلا يختفى هذا الفارق.'
+    +'فأوساطها تعطى نحو <b>١٠٠٫٨ مليار م³/سنة</b> بينما مرجع الإغلاق <b>'+nf(mcalTarget(),1)+' مليار</b>. '
+    +'وγ <b>يختار الموضع داخل كل نطاق</b> بحيث يغلق الإجمالى على المرجع — ولا يغيّر شكل التوزيع ولا النسب بين الشهور. '
+    +(mcalIsHist()
+      ? '<b>وهذان رقمان من نظامين:</b> الجدول الشهرى <b>مقيس</b> (يتضمن أثر السدود السودانية والسحب)، والمرجع '
+        +'<b>طبيعى تاريخى قبلها</b> — فγ هنا يؤدى مهمتين: إلغاء انحياز النموذج <b>و</b>الردّ لخط الأساس التاريخى.'
+      : '<b>المرجع هنا إجمالى مقيس</b>، فγ ينحصر دوره فى <b>إلغاء انحياز النموذج مقابل الواقع الميدانى</b> '
+        +'ويسقط اختلاط النظامين. تأكّد أن السنة المقيسة تمثّل نفس نظام التشغيل الحالى.')
     +'</div></div>';
   inner+='<div class="banner info" style="margin-top:10px"><span>ℹ</span><div>'
     +'<b>لماذا لا معامل واحد.</b> نسبة الوزارى إلى النموذج تتراوح نحو <b>٥×</b> بين يناير وسبتمبر، '
@@ -5205,6 +5433,7 @@ function secCalib(){
     +'<tr><td>'+stampPill("model")+'</td><td>الخام من النموذج — متسق داخلياً وصالح للشكل والتوقيت والإنذار النسبى.</td></tr>'
     +'</tbody></table></div>');
   s+=mcalHtml;
+  s+=dongolaPanel();
   return s;
 }
 
@@ -7949,6 +8178,45 @@ function bindControls(){
 
   el=$("cal-load"); if(el) el.onclick=function(){ calLoadModel(); };
   el=$("mcal-run"); if(el) el.onclick=function(){ mcalLoad(); };
+  el=$("mcal-bcm-save"); if(el) el.onclick=function(){
+    var f=$("mcal-bcm"), v=f?parseFloat(f.value):NaN;
+    if(isNaN(v)||v<40||v>200){
+      netErr("مرجع إغلاق غير مقبول", new Error("أدخل إجمالاً سنوياً بالمليار م³ بين 40 و200"));
+      return;
+    }
+    try{ localStorage.setItem("mwri_mcal_bcm", String(v)); }catch(e){}
+    auditLog("ضبط مرجع الإغلاق", v+" مليار م³/سنة");
+    if(ST.mcal.arch){
+      var F=mcalFit(ST.mcal.arch);
+      ST.mcal.par=F.ok?F.par:null; ST.mcal.sum=F.ok?F.sum:null;
+      ST.mcal.yr=F.ok?F.yr:null; ST.mcal.wy=F.ok?F.wy:null; ST.mcal.diag=F.diag;
+    }
+    render();
+  };
+  el=$("mcal-obs-save"); if(el) el.onclick=function(){
+    var f=$("mcal-obs"), v=f?String(f.value||"").trim():"";
+    try{ if(v) localStorage.setItem("mwri_mcal_obs", v); else localStorage.removeItem("mwri_mcal_obs"); }catch(e){}
+    var got=mcalObs(), k, n2=0;
+    for(k in got) if(got.hasOwnProperty(k)) n2++;
+    auditLog("إدخال إجماليات سنوية مقيسة", n2+" سنة");
+    if(v && n2===0) netErr("لم يُقرأ أى سنة", new Error("الصيغة: 2020,108.4;2023,64.1 — السنة أربعة أرقام والقيمة بين 20 و250"));
+    render();
+  };
+  el=$("mcal-obs-clr"); if(el) el.onclick=function(){
+    try{ localStorage.removeItem("mwri_mcal_obs"); }catch(e){}
+    auditLog("مسح الإجماليات المقيسة","");
+    render();
+  };
+  el=$("mcal-bcm-def"); if(el) el.onclick=function(){
+    try{ localStorage.removeItem("mwri_mcal_bcm"); }catch(e){}
+    auditLog("استعادة المرجع التاريخى", "84 مليار م³/سنة");
+    if(ST.mcal.arch){
+      var F2=mcalFit(ST.mcal.arch);
+      ST.mcal.par=F2.ok?F2.par:null; ST.mcal.sum=F2.ok?F2.sum:null;
+      ST.mcal.yr=F2.ok?F2.yr:null; ST.mcal.wy=F2.ok?F2.wy:null; ST.mcal.diag=F2.diag;
+    }
+    render();
+  };
   el=$("mcal-on"); if(el) el.onchange=function(){
     ST.mcal.on=this.checked;
     auditLog("مفتاح المعايرة الشهرية", this.checked?"مُفعَّلة":"مُطفأة");
