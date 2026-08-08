@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.88</small>
+      <small id="buildtag">build 2.90</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.88";
+var BUILD = "2.90";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -6938,7 +6938,19 @@ function gwmStatePanel(){
   body+='<div class="banner info" style="margin-top:12px"><span>\u2139</span><div>'
     +'<b>الرتبة تقارن الرصد بالرصد لنفس اليوم من السنوات السابقة</b> (نافذة ±١٢ يوماً) — '
     +'بلا منحنى ولا معايرة ولا نموذج، فهى أمتن ما فى التطبيق. '
-    +'«٩ / ١١» تعنى أعلى من تسع سنوات من إحدى عشرة عند نفس التاريخ.</div></div>';
+    +'«٩ / ١١» تعنى أعلى من تسع سنوات من إحدى عشرة عند نفس التاريخ.'
+    +'<div style="margin-top:5px"><b>واللون موضع من التاريخ لا إنذار:</b> '
+    +'أحمر = فوق ٨٠٪ من السنوات (عالٍ عن المعتاد) · أزرق = دون ٢٠٪ · أخضر = بينهما.</div></div></div>';
+  body+='<div class="banner warn" style="margin-top:10px"><span>\u26a0</span><div>'
+    +'<b>تحفّظان لازمان قبل البناء على الرتبة:</b>'
+    +'<div style="margin-top:5px"><b>١) الروصيرص وجبل أولياء خزانان مُشغَّلان</b> — ورتبتهما تعكس '
+    +'<b>قرار تشغيل</b> بقدر ما تعكس هيدرولوجيا. رتبة منخفضة عند الروصيرص فى موسم الفيضان قد تكون '
+    +'سحباً متعمَّداً قبل الموجة أو تمريراً للإطماء، لا شحّ وارد. وبحيرة ناصر كذلك يحكم منسوبَها '
+    +'الإطلاق من السد العالى لا الوارد وحده. فلا تُقرأ رتبة أى خزان مُشغَّل كإشارة هيدرولوجية خالصة.</div>'
+    +'<div style="margin-top:5px"><b>٢) الرتبة عن المنسوب لا التصرف</b> — تجيب سؤالاً واحداً: '
+    +'أعلى أم أدنى من المعتاد اليوم؟ ولا تقول كم يمرّ من المياه. '
+    +'وهى <b>لا تُقارَن بعتبة إنذار ولا تدخل التتبّع ولا الاتزان ولا أى حساب فى اللوحة</b> — عرض وتوجيه نظر فقط.</div>'
+    +'</div></div>';
   body+='<div class="tb-wrap" style="margin-top:12px"><table class="tb"><thead><tr>'
     +'<th>الهدف</th><th>آخر رصدة</th><th>المنسوب (م)</th><th>مدى السنوات</th><th>عن المتوسط</th><th>الرتبة</th>'
     +'</tr></thead><tbody>'+tr+'</tbody></table></div>';
@@ -6961,25 +6973,6 @@ function gwmCross(){
   var T=gwmTarget(ST.gwm.sel);
   if(!T.dahiti) return null;
   return srcCross(T.id, T.dahiti);
-}
-function gwmWorkerHint(){
-  return '<div class="banner warn" style="margin-top:12px"><span>\u26a0</span><div>'
-    +'<b>المخزن بلا ترويسة CORS</b> (مُختبَر بمنشأ github.io) فلا يُنادى من المتصفح مباشرةً، '
-    +'فالمسار الافتراضى هو وركر <b>gwm</b> المستقل على Cloudflare — <b>مضبوط مسبقاً فلا يحتاج إدخالاً على أى جهاز</b>. '
-    +'وهذا كوده كاملاً للرجوع أو لإعادة إنشائه:'
-    +'<pre style="white-space:pre-wrap;font-size:10px;background:#f6f2e6;padding:8px;border-radius:8px;margin-top:6px">'
-    +esc('if (url.pathname === "/gwm") {\n'
-        +'  const f = url.searchParams.get("f") || "";\n'
-        +'  if (!/^lake[0-9]+\\.[0-9]+d\\.[0-9]+\\.txt$/.test(f))\n'
-        +'    return new Response("bad f", { status: 400, headers: cors });\n'
-        +'  const r = await fetch("https://earth.gsfc.nasa.gov/gwm/timeseries/" + f);\n'
-        +'  return new Response(await r.text(), { status: r.status,\n'
-        +'    headers: { ...cors, "content-type": "text/plain; charset=utf-8" } });\n'
-        +'}')
-    +'</pre>'
-    +'حيث <b>cors</b> ترويسات <span dir="ltr">Access-Control-Allow-Origin: *</span> المستخدَمة عندك أصلاً. '
-    +'والتعبير النمطى يقصر الوسيط على ملفات GWM وحدها فلا يصير وسيطاً مفتوحاً.'
-    +'</div></div>';
 }
 /* =====================================================================
    أثر تشغيل الخزانات السودانية — الروصيرص وجبل أولياء
@@ -7365,7 +7358,6 @@ function secGwm(){
   }
 
   if(opsRes(ST.gwm.sel)) s+=opsPanel(ST.gwm.sel);
-  s+=gwmWorkerHint();
   s+='<div class="banner info" style="margin-top:10px"><span>ℹ</span><div>'
     +'<b>حدود معلنة.</b> الدورة ٢١ يوماً لSWOT و١٠ أيام لجيسون/Sentinel-6A — '
     +'وهذا <b>حدّ مدارى</b> لا تتخطّاه أى معالجة، فلا وجود لألتيمترى لحظى. '
