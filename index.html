@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.87</small>
+      <small id="buildtag">build 2.88</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.85";
+var BUILD = "2.88";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -817,6 +817,7 @@ var ST = {
   rlv:{ sel:"khartoum", data:{}, arch:{}, loading:"", err:"" },
   gwm:{ sel:"gerd", data:{}, loading:"", err:"" },
   nudge:false,
+  lakeBoot:false,
   calM:{ running:false, done:0, res:{}, fail:[] },
   rr:{ busy:false, fit:null, err:"" },
   wp:{ kind:"evap", mapset:"L2-AETI-D", nDek:6, busy:false, prog:"", err:"",
@@ -3127,28 +3128,155 @@ function nasserZone(h){
   var i; for(i=0;i<NASSER_ZONES.length;i++) if(h<NASSER_ZONES[i].to) return NASSER_ZONES[i];
   return { to:999, nm:"فوق الحد الأقصى 182 م", cls:"danger" };
 }
+/* =====================================================================
+   طبقة «الأحدث يحكم» — أى المصدرين رصدته أحدث يقود بطاقات غرفة الفيضان
+   المصدران مستقلان تماماً وليسا على مرجع رأسى واحد:
+     DAHITI  = normal heights على جيويد EIGEN-6C4
+     NASA GWM = منسوب على EGM2008
+   فتبديل المصدر بلا إزاحة مقيسة يبدّل المرجع الرأسى صامتاً.
+   القاعدة المطبَّقة: الإطار المرجعى للتطبيق هو DAHITI — لأن إزاحة مقياس
+   السد العالى (−0.70) مُعايرة عليه — فقيمة NASA تُردّ إليه بوسيط فروق
+   الأزواج المقيس، لا بافتراض تساوى المرجعين. وإن تعذّر القياس يُعلَن
+   ذلك على البطاقة ولا تُخترع إزاحة.
+   ===================================================================== */
+var SRC_PAIR_D=7;      /* أقصى فارق أيام لمزاوجة رصدتين من المصدرين */
+var SRC_ADJ_MIN=3;     /* أقل عدد أزواج تُقاس عليه الإزاحة */
+var SRC_ADJ_MAX=1.50;  /* فوقها تباعد لا إزاحة مرجع — فلا تُطبَّق */
+var NAS_NEAR=0.50;     /* نطاق «قرب عتبة توشكى» الذى يستدعى حكماً مسانداً */
+
+function srcCross(gid, did){
+  /* مزاوجة كل رصدة NASA بأقرب رصدة DAHITI داخل SRC_PAIR_D يوماً */
+  var G=ST.gwm.data[gid], D=ST.alti.data[did];
+  if(!G||!G.series||!G.series.length||!D||!D.series||!D.series.length) return null;
+  var pairs=[], i, j, best, bd, gn, dn;
+  for(i=0;i<G.series.length;i++){
+    gn=altiDayNum(G.series[i].t); best=null; bd=1e9;
+    for(j=0;j<D.series.length;j++){
+      dn=Math.abs(altiDayNum(D.series[j].t)-gn);
+      if(dn<bd){ bd=dn; best=D.series[j]; }
+    }
+    if(best && bd<=SRC_PAIR_D) pairs.push({ t:G.series[i].t, g:G.series[i].v, d:best.v, dt:bd, td:best.t });
+  }
+  if(pairs.length<SRC_ADJ_MIN) return { few:true, n:pairs.length };
+  var df=[], sum=0, mx=-1e9, mn=1e9, k, x;
+  for(k=0;k<pairs.length;k++){
+    x=pairs[k].g-pairs[k].d; df.push(x);
+    sum+=x; if(x>mx) mx=x; if(x<mn) mn=x;
+  }
+  var mean=sum/pairs.length, sd=0;
+  for(k=0;k<pairs.length;k++) sd+=Math.pow(df[k]-mean,2);
+  sd=Math.sqrt(sd/pairs.length);
+  df.sort(function(a,b){ return a-b; });
+  var m=(df.length%2)? df[(df.length-1)/2] : (df[df.length/2-1]+df[df.length/2])/2;
+  return { few:false, n:pairs.length, mean:mean, med:m, sd:sd, mn:mn, mx:mx, last:pairs[pairs.length-1] };
+}
+function srcBias(kind){
+  /* إزاحة المصدرين مقيسة لا مفترضة — الوسيط أمتن من المتوسط أمام الشواذّ */
+  var X=srcCross(kind, kind);
+  if(!X) return { ok:false, n:0, why:"nopair" };
+  if(X.few) return { ok:false, n:X.n, why:"few" };
+  if(Math.abs(X.med)>SRC_ADJ_MAX) return { ok:false, n:X.n, med:X.med, sd:X.sd, why:"big" };
+  return { ok:true, n:X.n, med:X.med, sd:X.sd };
+}
+function lakePick(kind){
+  /* أحدث رصدة من المصدرين، مردودة إلى إطار DAHITI. لا اختلاق فى الفراغ:
+     مصدر واحد متاح ← يُستعمل ويُعلَن أنه الوحيد. */
+  var Dd=ST.alti.data[kind], Dg=ST.gwm.data[kind];
+  var a=(Dd&&Dd.series&&Dd.series.length)? Dd.series[Dd.series.length-1] : null;
+  var b=(Dg&&Dg.series&&Dg.series.length)? Dg.series[Dg.series.length-1] : null;
+  if(!a&&!b) return null;
+  var useG = (!a) ? true : ((!b) ? false : (altiDayNum(b.t)>altiDayNum(a.t)));
+  var B = useG ? srcBias(kind) : { ok:true, n:0, med:0 };
+  var pick=useG?b:a, oth=useG?a:b;
+  var o={ src:(useG?"nasa":"dahiti"), srcNm:(useG?"NASA GWM":"DAHITI"),
+          t:pick.t, raw:pick.v, u:(pick.u!==undefined?pick.u:null),
+          adj:0, adjOk:true, adjN:(B.n||0), adjSd:(B.sd!==undefined?B.sd:null),
+          why:(B.why||""), other:null };
+  if(useG){ if(B.ok) o.adj=-B.med; else o.adjOk=false; }
+  o.v=o.raw+o.adj;
+  if(oth) o.other={ srcNm:(useG?"DAHITI":"NASA GWM"), t:oth.t, v:oth.v,
+                    lag:Math.abs(altiDayNum(o.t)-altiDayNum(oth.t)), dv:(o.raw-oth.v) };
+  o.age=Math.max(0, Math.floor(Date.now()/864e5)-altiDayNum(o.t));
+  return o;
+}
+function lakeSeries(kind){
+  /* سلسلة المصدر القائد وحده — لا تُخلَط سلسلتان فى فرق واحد */
+  var P=lakePick(kind); if(!P) return null;
+  var D=(P.src==="nasa")? ST.gwm.data[kind] : ST.alti.data[kind];
+  return (D&&D.series&&D.series.length)? D.series : null;
+}
+function serStats(S){
+  /* نفس منطق altiStats لكن على سلسلة مُمرَّرة، لأن المصدر القائد يتغيّر */
+  if(!S||S.length<2) return null;
+  var last=S[S.length-1], tn=altiDayNum(last.t);
+  function at(daysBack){
+    var i,best=null,bd=1e9;
+    for(i=0;i<S.length;i++){ var dd=Math.abs((tn-altiDayNum(S[i].t))-daysBack);
+      if(dd<bd){ bd=dd; best=S[i]; } }
+    return (bd<=daysBack*0.5+12)? best:null;
+  }
+  function d(p){ return p? last.v-p.v : null; }
+  return { last:last, n:S.length, from:S[0].t, d30:d(at(30)), d90:d(at(90)), d365:d(at(365)) };
+}
+function lakeSrcLine(P){
+  if(!P) return "";
+  var s="المصدر القائد "+P.srcNm;
+  if(P.src==="nasa"){
+    if(P.adjOk && P.adjN>0) s+=" (مردودة لإطار DAHITI بـ"+sgn(P.adj,2)+" م من "+nf(P.adjN,0)+" زوجاً)";
+    else if(!P.adjOk) s+=" — <b>إزاحة المصدرين غير مقيسة</b> فالقيمة على مرجع NASA كما هى";
+  }
+  if(P.other) s+=" · الآخر "+P.other.srcNm+" "+nf(P.other.v,2)+" م ("+esc(P.other.t)+" · أقدم بـ"+nf(P.other.lag,0)+" يوماً)";
+  else s+=" · <b>المصدر الآخر غير محمَّل</b>";
+  return s;
+}
+function nasserSteady(){
+  /* قرب عتبة توشكى لا تكفى رصدة مفردة: تشتت الألتيمترى يقارب ±٠٫٥ م،
+     أى نحو ٢ مليار م³ عند مسطح ~٤٬٠٠٠ كم². فيُحسب وسيط آخر ثلاث رصدات
+     كحكم مساند — لا بديلاً عن الأحدث ولا عن قراءة المقياس. */
+  var P=lakePick("nasser"), S=lakeSeries("nasser");
+  if(!P||!S||S.length<3) return null;
+  var w=[S[S.length-3].v, S[S.length-2].v, S[S.length-1].v].slice().sort(function(x,y){ return x-y; });
+  var hm=nasserH(w[1]+P.adj);
+  return { h:hm, v:nasserStore(hm,"official"), tosh:nasserToshka(hm),
+           spread:w[2]-w[0], t0:S[S.length-3].t, t1:S[S.length-1].t };
+}
+function nasserSteadyLine(NS){
+  if(!NS||NS.tosh===null||Math.abs(NS.tosh)>NAS_NEAR) return "";
+  var M=nasserSteady(); if(!M) return "";
+  return '<div style="margin-top:5px"><b>⚑ قرب العتبة — حكم مساند:</b> '
+    +'وسيط آخر ثلاث رصدات <b>'+nf(M.h,2)+'</b> م'
+    +(M.v!==null?(' ← <b>'+nf(M.v,1)+'</b> مليار م³'):'')
+    +' · '+(M.tosh>=0?'فوق':'دون')+' العتبة بـ<b>'+nf(Math.abs(M.tosh),2)+'</b> م'
+    +' · تشتت الرصدات الثلاث '+nf(M.spread,2)+' م ('+esc(M.t0)+' ← '+esc(M.t1)+'). '
+    +'الرصدة المفردة قرب العتبة لا تحسم: تشتت الألتيمترى يقارب ±٠٫٥ م، '
+    +'وهو نحو <b>٢ مليار م³</b> عند مسطح ~٤٬٠٠٠ كم². '
+    +'<b>القرار التشغيلى يبقى على قراءة مقياس السد العالى</b> — وهذا مؤشر مساند لا بديل.</div>';
+}
+
 function nasserNow(){
-  /* الحالة الحالية من آخر رصدة ألتيمترى — بلا جلب ولا اختلاق */
-  var D=ST.alti.data["nasser"];
-  if(!D||!D.series||!D.series.length) return null;
-  var L=D.series[D.series.length-1], h=nasserH(L.v);
-  var out={ t:L.t, hAlti:L.v, h:h, off:nasserDatum(), zone:nasserZone(h),
-            tosh:nasserToshka(h), areaFit:nasserAreaFit(h), v:{}, slope:{} }, i;
+  /* الحالة الحالية من أحدث رصدة متاحة من المصدرين — بلا جلب ولا اختلاق */
+  var P=lakePick("nasser"); if(!P) return null;
+  var h=nasserH(P.v);
+  var out={ t:P.t, hAlti:P.v, hRaw:P.raw, h:h, off:nasserDatum(), zone:nasserZone(h),
+            tosh:nasserToshka(h), areaFit:nasserAreaFit(h),
+            src:P.src, srcNm:P.srcNm, adj:P.adj, adjOk:P.adjOk, adjN:P.adjN,
+            other:P.other, u:P.u, v:{}, slope:{} }, i;
   for(i=0;i<NASSER_CURVES.length;i++){
     out.v[NASSER_CURVES[i].id]=nasserStore(h, NASSER_CURVES[i].id);
     out.slope[NASSER_CURVES[i].id]=nasserSlope(h, NASSER_CURVES[i].id);
   }
-  out.age=Math.max(0, Math.floor(Date.now()/864e5) - altiDayNum(L.t));
+  out.age=P.age;
   return out;
 }
 function nasserDelta(days){
   /* تغيّر التخزين بين آخر رصدة وأقرب رصدة قبلها بـdays يوماً.
      إزاحة المرجع تُلغى بالطرح داخل نفس القطعة الخطية — فهذا الرقم
      شبه غير حسّاس لخطأ المرجع، بخلاف التخزين المطلق. */
-  var A=altiStats("nasser"); if(!A) return null;
+  var P=lakePick("nasser"); if(!P) return null;
+  var A=serStats(lakeSeries("nasser")); if(!A) return null;
   var d=(days===90)?A.d90:((days===365)?A.d365:A.d30);
   if(d===null||d===undefined) return null;
-  var h2=nasserH(A.last.v), h1=h2-d, out={ dh:d, days:days, v:{} }, i, a, b;
+  var h2=nasserH(A.last.v+P.adj), h1=h2-d, out={ dh:d, days:days, v:{} }, i, a, b;
   for(i=0;i<NASSER_CURVES.length;i++){
     a=nasserStore(h1, NASSER_CURVES[i].id); b=nasserStore(h2, NASSER_CURVES[i].id);
     out.v[NASSER_CURVES[i].id]=(a===null||b===null)?null:(b-a);
@@ -3160,41 +3288,43 @@ function sgn(x, dg){ if(x===null||x===undefined||isNaN(x)) return "—"; return 
 function gerdNow(){
   /* حالة سد النهضة من آخر رصدة ألتيمترى — يعيد استخدام منحنى RESERVOIRS
      نفسه المستخدَم فى قسم تشغيل الخزانات، فلا منحنى ثانياً ولا رقمين مختلفين */
-  var D=ST.alti.data["gerd"];
-  if(!D||!D.series||!D.series.length) return null;
-  var L=D.series[D.series.length-1], R=resv("gerd"), hv=hvV(R, L.v);
-  return { t:L.t, h:L.v, u:(L.u!==undefined?L.u:null),
+  var P=lakePick("gerd"); if(!P) return null;
+  var R=resv("gerd"), hv=hvV(R, P.v);
+  return { t:P.t, h:P.v, hRaw:P.raw, u:P.u,
            v:(hv.out?null:hv.v), out:hv.out,
-           area:hvArea(R, L.v),
+           area:hvArea(R, P.v),
            fsl:R.hv[R.hv.length-1],
-           age:Math.max(0, Math.floor(Date.now()/864e5) - altiDayNum(L.t)) };
+           src:P.src, srcNm:P.srcNm, adj:P.adj, adjOk:P.adjOk, adjN:P.adjN, other:P.other,
+           age:P.age };
 }
 function gerdDelta(days){
   /* نفس منطق ناصر: الفرق داخل المنحنى — والإزاحة الثابتة فى المرجع
      تُلغى بالطرح، فهذا الرقم أمتن من التخزين المطلق */
-  var A=altiStats("gerd"); if(!A) return null;
+  var P=lakePick("gerd"); if(!P) return null;
+  var A=serStats(lakeSeries("gerd")); if(!A) return null;
   var d=(days===90)?A.d90:((days===365)?A.d365:A.d30);
   if(d===null||d===undefined) return null;
-  var R=resv("gerd"), h2=A.last.v, h1=h2-d;
+  var R=resv("gerd"), h2=A.last.v+P.adj, h1=h2-d;
   var a=hvV(R,h1), b=hvV(R,h2);
   if(a.out||b.out) return { dh:d, days:days, v:null, out:true };
   return { dh:d, days:days, v:(b.v-a.v), out:false };
 }
 function gerdLevelCard(){
+  /* أحدث رصدة من المصدرين + التخزين المقابل لها مباشرةً على البطاقة */
   var G=gerdNow(), big="\u2014", sub="", cls="";
   if(G){
     big=nf(G.h,2);
-    sub="\u0631\u0635\u062f "+G.t+" \u00b7 \u0645\u0646\u0630 "+nf(G.age,0)+" \u064a\u0648\u0645\u0627\u064b";
-    if(G.u!==null&&G.u!==undefined&&!isNaN(G.u)) sub+=" \u00b7 \u00b1"+nf(G.u,2)+" \u0645";
+    sub=(G.v!==null? (nf(G.v,1)+" مليار م\u00b3 \u00b7 ") : "خارج مدى المنحنى \u00b7 ")
+        +"رصد "+G.t+" \u00b7 منذ "+nf(G.age,0)+" يوماً \u00b7 "+G.srcNm;
     if(G.age>45) cls="sand";
-  } else if(ST.alti.loading){
-    sub="\u062c\u0627\u0631\u064d \u0627\u0644\u062c\u0644\u0628 \u0645\u0646 DAHITI\u2026";
+  } else if(ST.alti.loading||ST.gwm.loading){
+    sub="جارٍ الجلب\u2026";
   } else if(ST.alti.keyOk===false){
-    sub="\u0628\u0644\u0627 \u0645\u0641\u062a\u0627\u062d DAHITI";
+    sub="بلا مفتاح DAHITI \u2014 وسلسلة NASA لم تُجلب";
   } else {
-    sub="\u0644\u0645 \u062a\u064f\u062c\u0644\u064e\u0628 \u0628\u0639\u062f";
+    sub="لم تُجلب بعد";
   }
-  return kpi("\u25b3", cls, "\u0645\u0646\u0633\u0648\u0628 \u0633\u062f \u0627\u0644\u0646\u0647\u0636\u0629", big, "\u0645", sub);
+  return kpi("\u25b3", cls, "منسوب سد النهضة", big, "م", sub);
 }
 function lakesNetCard(){
   /* صافى ما احتجزه الخزانان أو أطلقاه فى ٣٠ يوماً — رقمان ألتيمتريان
@@ -3265,37 +3395,44 @@ function nasserStorePanel(){
 }
 
 function nasserLevelCard(){
-  /* منسوب بحيرة ناصر المرصود بالألتيمترى (DAHITI 210) — رقم مرصود لا مُنمذَج.
-     الرصدات متباعدة بطبيعة المدار، فتاريخ الرصد وعمره جزء لا يتجزأ من الرقم. */
-  var D = ST.alti.data["nasser"], big = "\u2014", sub = "", cls = "";
-  if(D && D.series && D.series.length){
-    var L = D.series[D.series.length-1];
-    var age = Math.floor(Date.now()/864e5) - altiDayNum(L.t);
-    if(age < 0) age = 0;
-    big = nf(L.v, 2);
-    sub = "\u0631\u0635\u062f " + L.t + " \u00b7 \u0645\u0646\u0630 " + nf(age,0) + " \u064a\u0648\u0645\u0627\u064b";
-    if(L.u !== null && L.u !== undefined && !isNaN(L.u)) sub += " \u00b7 \u00b1" + nf(L.u,2) + " \u0645";
-    if(age > 45) cls = "sand";
-  } else if(ST.alti.loading){
-    sub = "\u062c\u0627\u0631\u064d \u0627\u0644\u062c\u0644\u0628 \u0645\u0646 DAHITI\u2026";
-  } else if(ST.alti.keyOk === false){
-    sub = "\u0628\u0644\u0627 \u0645\u0641\u062a\u0627\u062d DAHITI \u2014 \u0623\u062f\u062e\u0644\u0647 \u0641\u064a \u0642\u0633\u0645 \u0627\u0644\u0623\u0644\u062a\u064a\u0645\u062a\u0631\u0649";
+  /* أحدث رصدة من المصدرين، على مرجع مقياس السد العالى، ومعها السعة المقابلة.
+     الرصدات متباعدة بطبيعة المدار فتاريخ الرصد وعمره جزء لا يتجزأ من الرقم. */
+  var NS=nasserNow(), big="\u2014", sub="", cls="";
+  if(NS){
+    big=nf(NS.h,2);
+    sub=(NS.v.official!==null? (nf(NS.v.official,1)+" مليار م\u00b3 \u00b7 ") : "")
+        +"رصد "+NS.t+" \u00b7 منذ "+nf(NS.age,0)+" يوماً \u00b7 "+NS.srcNm;
+    if(NS.age>45) cls="sand";
+    if(NS.tosh!==null&&NS.tosh>=0) cls="danger";
+    else if(NS.tosh!==null&&NS.tosh>-NAS_NEAR) cls="sand";
+  } else if(ST.alti.loading||ST.gwm.loading){
+    sub="جارٍ الجلب\u2026";
+  } else if(ST.alti.keyOk===false){
+    sub="بلا مفتاح DAHITI \u2014 وسلسلة NASA لم تُجلب";
   } else {
-    sub = "\u0644\u0645 \u062a\u064f\u062c\u0644\u064e\u0628 \u0628\u0639\u062f \u2014 \u0627\u0641\u062a\u062d \u0642\u0633\u0645 \u0627\u0644\u0623\u0644\u062a\u064a\u0645\u062a\u0631\u0649";
+    sub="لم تُجلب بعد \u2014 افتح قسم الألتيمترى";
   }
-  return kpi("\u25ce", cls, "\u0645\u0646\u0633\u0648\u0628 \u0628\u062d\u064a\u0631\u0629 \u0646\u0627\u0635\u0631", big, "\u0645", sub);
+  return kpi("\u25ce", cls, "منسوب ناصر (مقياس السد)", big, "م", sub);
 }
 function altiBootLakes(){
-  /* جلب صامت لمرة واحدة للخزانين حتى تُملأ بطاقات غرفة الفيضان دون فتح قسم الألتيمترى.
-     تتابعى لا متوازٍ — نداءان متزامنان على نفس المفتاح يتسابقان على ST.alti.loading */
-  if(ST.alti.loading) return;
-  var need=[], i, ids=["gerd","nasser"];
-  for(i=0;i<ids.length;i++) if(!ST.alti.data[ids[i]]) need.push(ids[i]);
-  if(!need.length) return;
-  var chain=Promise.resolve();
-  need.forEach(function(id){
-    chain=chain.then(function(){ return altiLoad(id); }).catch(function(){ return null; });
-  });
+  /* جلب صامت لمرة واحدة للخزانين من المصدرين معاً، حتى تُملأ بطاقات غرفة
+     الفيضان بأحدث رصدة دون فتح أى قسم. تتابعى لا متوازٍ — النداءات
+     المتزامنة تتسابق على أعلام التحميل (درس ٢٫٥٦). */
+  if(ST.lakeBoot) return;
+  ST.lakeBoot=true;
+  var ids=["gerd","nasser"], chain=Promise.resolve(), i;
+  for(i=0;i<ids.length;i++){
+    (function(id){
+      if(!ST.alti.data[id])
+        chain=chain.then(function(){ return altiLoad(id); }).catch(function(){ return null; });
+    })(ids[i]);
+  }
+  for(i=0;i<ids.length;i++){
+    (function(id){
+      if(!ST.gwm.data[id])
+        chain=chain.then(function(){ return gwmLoad(id); }).catch(function(){ return null; });
+    })(ids[i]);
+  }
 }
 
 /* ---- 1. غرفة الفيضان ---- */
@@ -3355,7 +3492,7 @@ function secCommand(){
            +' · نحو <b>'+nf(GS.v/GS.fsl.v*100,0)+'٪</b> من ' +nf(GS.fsl.v,0)+' مليار عند منسوب الاعتماد '+nf(GS.fsl.h,0)+' م')
         : '<b>خارج مدى المنحنى</b> — لا رقم')
       +(dG30&&dG30.v!==null?(' · تغيّر ٣٠ يوماً <b>'+sgn(dG30.v,2)+'</b> مليار م³'):'')
-      +'<div style="margin-top:5px">رصد '+esc(GS.t)+' · منذ '+nf(GS.age,0)+' يوماً · '
+      +'<div style="margin-top:5px">رصد '+esc(GS.t)+' · منذ '+nf(GS.age,0)+' يوماً · '+lakeSrcLine(GS)+'. '
       +'المنحنى مبنى على <b>معالم الملء المعلنة</b> لا جدول سعة رسمى'
       +(GS.area!==null?(' · المسطح المكافئ هنا '+nf(GS.area,0)+' كم²'):'')
       +'. <b>انحياز معروف الاتجاه:</b> المسطح الضمنى فى المنحنى أقل من المساحة المعلنة عند منسوب الاعتماد، '
@@ -3372,13 +3509,14 @@ function secCommand(){
       +' · الحيّز: <span class="pill '+NS.zone.cls+'">'+esc(NS.zone.nm)+'</span>'
       +(dS&&dS.v.official!==null?(' · تغيّر ٣٠ يوماً <b>'+sgn(dS.v.official,1)+'</b> مليار م³'):'')
       +(NS.tosh!==null?(' · <b>'+(NS.tosh>=0?'فوق':'دون')+' عتبة توشكى بـ'+nf(Math.abs(NS.tosh),2)+' م</b>'):'')
-      +'<div style="margin-top:5px">رصد '+esc(NS.t)+' · منذ '+nf(NS.age,0)+' يوماً · '
+      +'<div style="margin-top:5px">رصد '+esc(NS.t)+' · منذ '+nf(NS.age,0)+' يوماً · '+lakeSrcLine(NS)+'. '
       +'التخزين من <b>جدول الوزارة الرسمى</b> باستيفاء خطى بين معالمه، '
       +(NS.off===0
         ? 'وبلا إزاحة مرجع.'
         : ('ومصحَّح إلى <b>مرجع مقياس السد العالى</b> بإزاحة '+sgn(NS.off,2)+' م'
            +(nasserDatumIsDef()?' (الربط الرسمى: الجيودى − ٠٫٧٠)':' (إزاحة مخصّصة)')+'.'))
       +' <b>تغيّر التخزين</b> أعلاه شبه غير حسّاس لهذا الخطأ لأن الإزاحة تُلغى بالطرح.</div>'
+      +nasserSteadyLine(NS)
       +'</div></div>';
   }
 
@@ -6819,30 +6957,10 @@ function gwmStatePanel(){
 
 function gwmCross(){
   /* المقارنة الجوهرية: نفس الخزان من مصدرين مستقلين تماماً.
-     تُزاوَج كل رصدة NASA بأقرب رصدة DAHITI داخل ٧ أيام — وبغير ذلك لا تُزاوَج. */
+     المزاوجة نفسها المستعمَلة فى قياس إزاحة المصدرين — تنفيذ واحد لا اثنان. */
   var T=gwmTarget(ST.gwm.sel);
   if(!T.dahiti) return null;
-  var G=ST.gwm.data[T.id], D=ST.alti.data[T.dahiti];
-  if(!G||!D||!D.series||!D.series.length) return null;
-  var pairs=[], i, j, best, bd, gn, dn;
-  for(i=0;i<G.series.length;i++){
-    gn=altiDayNum(G.series[i].t); best=null; bd=1e9;
-    for(j=0;j<D.series.length;j++){
-      dn=Math.abs(altiDayNum(D.series[j].t)-gn);
-      if(dn<bd){ bd=dn; best=D.series[j]; }
-    }
-    if(best && bd<=7) pairs.push({ t:G.series[i].t, g:G.series[i].v, d:best.v, dt:bd, td:best.t });
-  }
-  if(pairs.length<3) return { few:true, n:pairs.length };
-  var sum=0, mx=-1e9, mn=1e9, k;
-  for(k=0;k<pairs.length;k++){
-    var df=pairs[k].g-pairs[k].d;
-    sum+=df; if(df>mx) mx=df; if(df<mn) mn=df;
-  }
-  var mean=sum/pairs.length, sd=0;
-  for(k=0;k<pairs.length;k++) sd+=Math.pow((pairs[k].g-pairs[k].d)-mean,2);
-  sd=Math.sqrt(sd/pairs.length);
-  return { few:false, n:pairs.length, mean:mean, sd:sd, mn:mn, mx:mx, last:pairs[pairs.length-1] };
+  return srcCross(T.id, T.dahiti);
 }
 function gwmWorkerHint(){
   return '<div class="banner warn" style="margin-top:12px"><span>\u26a0</span><div>'
