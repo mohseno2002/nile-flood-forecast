@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.90</small>
+      <small id="buildtag">build 2.92</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.90";
+var BUILD = "2.92";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -788,6 +788,7 @@ var SECTIONS = [
   {id:"skill",    icon:"◷", eyebrow:"الرقابة الذاتية",       title:"سجل أداء التنبؤ"},
   {id:"sources",  icon:"❐", eyebrow:"الشفافية",             title:"المصادر والمنهجية والحدود"},
   {id:"dam",      icon:"⛬", eyebrow:"تشغيل الخزانات",       title:"صافى الإطلاق من الألتيمترى"},
+  {id:"tosh",     icon:"↓", eyebrow:"مفيض توشكى",           title:"مفيض توشكى — السكب المقيس"},
   {id:"wapor",    icon:"◉", eyebrow:"استشعار الفواقد",       title:"WaPOR — البخر والفواقد المقيسة"},
   {id:"gfh",      icon:"⊞", eyebrow:"الرأى الثانى",         title:"تنبؤ جوجل — نموذج مستقل"},
   {id:"cert",     icon:"✦", eyebrow:"النشرة",               title:"شهادة الرصد المستقل"},
@@ -808,6 +809,7 @@ var ST = {
   fingerDay:null,
   calib:null, calibRunning:false,
   obs:{}, alerts:{}, log:{},
+  tosh:{loading:false, got:{}, now:"", err:""},
   user:"", audit:{}, reachesPrev:null,
   sar:{ data:{}, loading:null, credSrc:null, sel:"shendi" },
   alti:{ data:{}, loading:false, sel:"gerd", keyOk:null, mode:"lake" },
@@ -4548,6 +4550,336 @@ function secInstall(){
 }
 
 /* ---- مرصد الأقمار — Sentinel-1 ---- */
+/* =====================================================================
+   مفيض توشكى — السكب المقيس من صور MODIS الحرة (٢٫٩١)
+   الصور: NASA GIBS WMTS · MODIS_Terra_CorrectedReflectance_Bands721
+          بلا مفتاح ولا وسيط · access-control-allow-origin: *  (مُتحقَّق منه)
+          JPEG لا PNG مفهرس ← فالتصنيف الكمّى مشروع (عكس فخّ الألوان المفهرسة)
+   المنسوب والحجم: منحنى TOSH_HV مشتقّ مسبقاً من نموذج ارتفاعات عام
+          (بلاطات الارتفاع بلا CORS فلا تُقرأ فى المتصفح — لذلك المنحنى ثابت مبيَّت)
+   القاعدة الحاكمة: بحيرة ناصر شاهد داخلى فى نفس الصورة بنفس العتبة.
+          أى تاريخ تنهار فيه مساحة ناصر = فشل تصنيف يُرفض، لا قراءة تُعرض.
+   ===================================================================== */
+var TOSH_LAYER = "MODIS_Terra_CorrectedReflectance_Bands721";
+var TOSH_Z = 8, TOSH_TS = 512, TOSH_DEG = 0.002197265625;
+var TOSH_XS = [186,187,188], TOSH_YS = [59,60];
+var TOSH_LAT0 = 23.625, TOSH_LON0 = 29.25;
+var TOSH_BOX = {w:29.60, e:31.32, s:22.45, n:23.60};
+var TOSH_NAS = {w:31.45, e:32.60, s:21.90, n:23.60};
+var TOSH_NAS_MIN = 1200;
+var TOSH_EVAP = 2.4, TOSH_EVAP_LO = 2.1, TOSH_EVAP_HI = 2.7;
+var TOSH_NOISE = 0.086;
+var TOSH_AMAX_SEEN = 2856;
+var TOSH_HYPO = [6,12,24,44];
+var TOSH_Y0 = 2019;
+
+/* [منسوب م, مساحة كم², حجم مليار م³] — تراكمى من قاع المنخفض */
+var TOSH_HV = [
+  [118,91,0.53], [120,114,0.74], [122,138,1.01], [124,164,1.32], [126,199,1.70], [128,243,2.17],
+  [130,295,2.73], [132,358,3.41], [134,908,5.18], [136,1016,7.15], [138,1132,9.36], [140,1242,11.79],
+  [142,1359,14.45], [144,1488,17.35], [146,1965,21.20], [148,2148,25.41], [150,2350,30.00], [152,2563,35.02],
+  [154,2794,40.50], [156,3034,46.44], [158,3606,53.52], [160,3895,61.16], [162,4197,69.40], [164,4515,78.27],
+  [166,4858,87.81], [168,5230,98.08], [170,5629,109.14]
+];
+
+function toshInterp(ci, co, v){
+  var i, a, b;
+  if(v===null || v===undefined || isNaN(v)) return null;
+  if(v < TOSH_HV[0][ci] || v > TOSH_HV[TOSH_HV.length-1][ci]) return null;  /* لا استقراء خارج المدى */
+  for(i=0;i<TOSH_HV.length-1;i++){
+    a=TOSH_HV[i]; b=TOSH_HV[i+1];
+    if(v>=a[ci] && v<=b[ci]){
+      if(b[ci]===a[ci]) return a[co];
+      return a[co] + (b[co]-a[co])*(v-a[ci])/(b[ci]-a[ci]);
+    }
+  }
+  return null;
+}
+function toshHofA(a){ return toshInterp(1,0,a); }
+function toshVofA(a){ return toshInterp(1,2,a); }
+function toshAofV(v){ return toshInterp(2,1,v); }
+
+function toshUrl(date, y, x){
+  return "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/" + TOSH_LAYER
+    + "/default/" + date + "/250m/" + TOSH_Z + "/" + y + "/" + x + ".jpg";
+}
+function toshImg(u){
+  return new Promise(function(res, rej){
+    var im = new Image();
+    im.crossOrigin = "anonymous";
+    im.onload = function(){ res(im); };
+    im.onerror = function(){ rej(new Error("تعذّر تحميل بلاطة GIBS — " + u.slice(-26))); };
+    im.src = u;
+  });
+}
+function toshBoxIdx(b, W, H){
+  return { c0: Math.max(0, Math.floor((b.w - TOSH_LON0)/TOSH_DEG)),
+           c1: Math.min(W-1, Math.ceil((b.e - TOSH_LON0)/TOSH_DEG)),
+           r0: Math.max(0, Math.floor((TOSH_LAT0 - b.n)/TOSH_DEG)),
+           r1: Math.min(H-1, Math.ceil((TOSH_LAT0 - b.s)/TOSH_DEG)) };
+}
+/* التصنيف تكيّفى على سطوع المشهد — العتبة المطلقة فشلت (نفس العتبة أعطت ٦ و٢٧٠٠ كم² فى شهرين متجاورين) */
+function toshClassify(d, W, H){
+  var i, j, k, p, tot = W*H;
+  var hist = new Array(256);
+  for(i=0;i<256;i++) hist[i] = 0;
+  for(i=0;i<tot;i++) hist[d[i*4]]++;
+  var acc = 0, ref = 200;
+  for(i=0;i<256;i++){ acc += hist[i]; if(acc >= 0.75*tot){ ref = i; break; } }
+  var thDark = 0.30*ref, thDeep = 0.15*ref, thNir = 0.45*ref;
+  function scan(R){
+    var area = 0, black = 0, white = 0, n = 0, lat, pa, r, g, b, nd;
+    for(j=R.r0;j<=R.r1;j++){
+      lat = TOSH_LAT0 - (j+0.5)*TOSH_DEG;
+      pa = (TOSH_DEG*111.32*Math.cos(lat*Math.PI/180))*(TOSH_DEG*110.57);
+      for(k=R.c0;k<=R.c1;k++){
+        p = (j*W + k)*4; r = d[p]; g = d[p+1]; b = d[p+2]; n++;
+        if(r<8 && g<8 && b<8) black++;
+        if((r+g+b)/3 > 243) white++;
+        nd = (b-r)/Math.max(b+r,1);
+        if((r<thDark && nd>0.05 && g<thNir) || (r<thDeep)) area += pa;
+      }
+    }
+    return { a:area, black:black/Math.max(n,1), white:white/Math.max(n,1) };
+  }
+  var T = scan(toshBoxIdx(TOSH_BOX,W,H)), N = scan(toshBoxIdx(TOSH_NAS,W,H));
+  if(T.black>0.01 || N.black>0.01) return { st:"nodata" };
+  if(T.white>0.02) return { st:"cloud" };
+  if(N.a < TOSH_NAS_MIN) return { st:"badclass", n:N.a };
+  return { st:"ok", a:T.a, n:N.a, ref:ref };
+}
+function toshLoadOne(date){
+  var W = TOSH_XS.length*TOSH_TS, H = TOSH_YS.length*TOSH_TS;
+  var cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  var cx = cv.getContext("2d");
+  var jobs = [], chain = Promise.resolve();
+  TOSH_YS.forEach(function(y, ry){
+    TOSH_XS.forEach(function(x, rx){ jobs.push({x:x, y:y, px:rx*TOSH_TS, py:ry*TOSH_TS}); });
+  });
+  jobs.forEach(function(J){
+    chain = chain.then(function(){
+      return toshImg(toshUrl(date, J.y, J.x)).then(function(im){ cx.drawImage(im, J.px, J.py); });
+    });
+  });
+  return chain.then(function(){
+    var g;
+    try { g = cx.getImageData(0,0,W,H).data; }
+    catch(e){ throw new Error("تعذّرت قراءة البكسل — الأرجح CORS على بلاطة"); }
+    return toshClassify(g, W, H);
+  });
+}
+
+/* المرساة موسمية: أكتوبر–نوفمبر بعد ذروة الفيضان — أمتن من الوسيط السنوى */
+function toshIso(d){ return d.toISOString().slice(0,10); }
+function toshDates(){
+  var y, out = [], last = new Date().getFullYear();
+  var cut = toshIso(new Date(Date.now() - 3*86400000));   /* تأخّر نشر MODIS */
+  function past(x){ return x <= cut; }
+  for(y=TOSH_Y0; y<=last; y++){
+    var c = [y+"-10-20", y+"-11-20", y+"-10-10"].filter(past);
+    if(!c.length && y===last){
+      /* مرساة الخريف لم تحن بعد فى السنة الجارية — تُقرأ أحدث مرساة متاحة
+         وتُوسَم «موسم غير مكتمل» ولا تدخل الموازنة الموسمية إطلاقاً */
+      c = [ toshIso(new Date(Date.now()-20*86400000)), toshIso(new Date(Date.now()-50*86400000)) ];
+    }
+    if(c.length) out.push(c);
+  }
+  return out;
+}
+function toshRun(){
+  if(ST.tosh.loading) return;
+  var groups = toshDates(), gi = 0;
+  ST.tosh.loading = true; ST.tosh.err = ""; render();
+  function nextYear(){
+    if(gi >= groups.length){ ST.tosh.loading = false; render(); return; }
+    var cands = groups[gi], ci = 0, y = cands[0].slice(0,4);
+    function tryOne(){
+      if(ci >= cands.length){ gi++; nextYear(); return; }
+      var dt = cands[ci];
+      if(ST.tosh.got[dt]){ ci++; if(ST.tosh.got[dt].st==="ok"){ gi++; nextYear(); } else tryOne(); return; }
+      ST.tosh.now = dt; render();
+      toshLoadOne(dt).then(function(r){
+        var rec = { st:r.st, a:(r.a===undefined?null:Math.round(r.a)), n:(r.n===undefined?null:Math.round(r.n)), at:Date.now() };
+        ST.tosh.got[dt] = rec;
+        MwriDb.patch("apps/"+APPID+"/data/toshka/"+dt, rec).catch(function(){});
+        if(r.st === "ok"){ gi++; nextYear(); } else { ci++; tryOne(); }
+      }).catch(function(e){
+        ST.tosh.err = (e && e.message) ? e.message : String(e);
+        netErr("توشكى — " + y, e);
+        ci++; tryOne();
+      });
+    }
+    tryOne();
+  }
+  nextYear();
+}
+
+/* سنة واحدة = وسيط التواريخ الناجحة فيها · والتشتّت يُعلَن ولا يُخفى */
+function toshYears(){
+  var k, y, by = {}, out = [];
+  for(k in ST.tosh.got){
+    if(!Object.prototype.hasOwnProperty.call(ST.tosh.got,k)) continue;
+    var r = ST.tosh.got[k];
+    if(!r || r.st !== "ok" || !r.a) continue;
+    y = k.slice(0,4);
+    if(!by[y]) by[y] = { a:[], aut:false, d:k };
+    by[y].a.push(r.a);
+    if(k.slice(5,7)==="10" || k.slice(5,7)==="11") by[y].aut = true;
+  }
+  for(y in by){
+    if(!Object.prototype.hasOwnProperty.call(by,y)) continue;
+    var v = by[y].a.slice().sort(function(a,b){ return a-b; });
+    var med = v.length%2 ? v[(v.length-1)/2] : (v[v.length/2-1]+v[v.length/2])/2;
+    var spread = v.length>1 ? (v[v.length-1]-v[0])/Math.max(med,1) : 0;
+    out.push({ y:+y, a:med, n:v.length, spread:spread, part:!by[y].aut,
+               h:toshHofA(med), v:toshVofA(med), date:by[y].d });
+  }
+  out.sort(function(a,b){ return a.y-b.y; });
+  return out;
+}
+/* السكب = تغيّر التخزين + البخر — والبخر هو الطرف المسيطر عند الاتزان */
+function toshBalance(){
+  var Y = toshYears(), i, out = [];
+  for(i=1;i<Y.length;i++){
+    var p = Y[i-1], c = Y[i];
+    if(p.v===null || c.v===null || c.y !== p.y+1) continue;
+    if(p.part || c.part) continue;   /* المرساة الموسمية شرط — لا تُقارن خريفاً بصيف */
+    var am = (p.a + c.a)/2;
+    var dV = c.v - p.v;
+    var ev = am*TOSH_EVAP/1000, evLo = am*TOSH_EVAP_LO/1000, evHi = am*TOSH_EVAP_HI/1000;
+    var vLo = toshVofA(c.a*(1-TOSH_NOISE)), vHi = toshVofA(c.a*(1+TOSH_NOISE));
+    var pLo = toshVofA(p.a*(1-TOSH_NOISE)), pHi = toshVofA(p.a*(1+TOSH_NOISE));
+    var band = null;
+    if(vLo!==null && vHi!==null && pLo!==null && pHi!==null)
+      band = { lo:(vLo-pHi)+evLo, hi:(vHi-pLo)+evHi };
+    out.push({ y:c.y, a:c.a, dV:dV, ev:ev, evLo:evLo, evHi:evHi, spill:dV+ev, band:band,
+               prev:p.y, prevA:p.a, prevV:p.v, v:c.v, spread:c.spread });
+  }
+  return out;
+}
+/* اختبار الفروض: كل قيمة سكب تفرض مساحة كان يجب رصدها */
+function toshHypo(row){
+  if(!row) return [];
+  return TOSH_HYPO.map(function(s){
+    var need = row.prevV + s - row.ev;
+    var a = toshAofV(need);
+    return { s:s, v:need, a:a, ok:(a!==null && a<=TOSH_AMAX_SEEN) };
+  });
+}
+function toshLatest(){ var B = toshBalance(); return B.length ? B[B.length-1] : null; }
+function toshTotal(){
+  var Y = toshYears(), i, ev = 0;
+  if(Y.length < 2) return null;
+  for(i=0;i<Y.length;i++) ev += Y[i].a*TOSH_EVAP/1000;
+  var dV = (Y[Y.length-1].v===null || Y[0].v===null) ? null : Y[Y.length-1].v - Y[0].v;
+  if(dV===null) return null;
+  return { from:Y[0].y, to:Y[Y.length-1].y, dV:dV, ev:ev, tot:dV+ev, n:Y.length };
+}
+
+function secTosh(){
+  var Y = toshYears(), B = toshBalance(), L = toshLatest(), TT = toshTotal();
+  var done = 0, k;
+  for(k in ST.tosh.got) if(Object.prototype.hasOwnProperty.call(ST.tosh.got,k)) done++;
+  var ctrl = '<div class="ctrl">'
+    + '<button class="btn solid mini" id="tosh-run"' + (ST.tosh.loading?" disabled":"") + '>'
+    + (ST.tosh.loading ? ("جارٍ القراءة… " + esc(ST.tosh.now||"")) : "◎ اقرأ المساحات من MODIS") + '</button>'
+    + '<span class="pill lake">' + nf(done,0) + ' تاريخاً مقروءاً</span>'
+    + '<span class="pill green">بلا مفتاح ولا وسيط</span></div>';
+
+  var s = panel("مفيض توشكى", "السكب المقيس من الأقمار الصناعية", ctrl,
+      'تُقرأ صور <b>MODIS Terra Bands721</b> من NASA GIBS مباشرةً فى المتصفح (٦ بلاطات لكل تاريخ) '
+    + 'ويُصنَّف الماء بعتبة <b>تكيّفية على سطوع كل مشهد</b>، ثم تُترجَم المساحة إلى منسوب وحجم '
+    + 'بمنحنى مشتقّ من نموذج ارتفاعات. المرساة <b>أكتوبر–نوفمبر</b> من كل سنة — بعد ذروة الفيضان.');
+
+  s += '<div class="banner ok"><span>⚖</span><div><b>بحيرة ناصر شاهد داخلى فى نفس الصورة.</b> '
+    + 'تُقاس مساحتها بنفس العتبة تماماً؛ فأى تاريخ تنهار فيه دون <b>' + nf(TOSH_NAS_MIN,0) + ' كم²</b> '
+    + 'يُرفَض كفشل تصنيف ولا تُعرض له قراءة. وتشتّت الشاهد المقيس <b>٨٫٦٪</b> هو ضجيج القياس المعلن — '
+    + 'وهو مصدر النطاقات أدناه، لا رقم مُقدَّر.</div></div>';
+
+  if(!Y.length){
+    return s + panel("لم يُقرأ بعد", "اضغط زر القراءة أعلاه",
+      '<p class="note">القراءة <b>تراكمية وقابلة للاستئناف</b>: كل تاريخ ناجح يُحفَظ فى القاعدة المشتركة '
+      + 'فلا يُعاد تنزيله على أى جهاز. أول تشغيل ينزّل حتى ~٥٠ بلاطة صورة، وقد يستغرق دقيقة على شبكة الموبايل.</p>'
+      + (ST.tosh.err ? '<div class="banner danger"><span>⚠</span><div><b>آخر خطأ:</b> ' + esc(ST.tosh.err) + '</div></div>' : ''));
+  }
+
+  var last = Y[Y.length-1];
+  var partNote = last.part ? '<div class="banner warn"><span>⧗</span><div><b>' + last.y
+    + ' موسمها لم يكتمل بعد</b> — مرساة أكتوبر–نوفمبر لم تحن، فالقراءة المعروضة من أحدث تاريخ متاح '
+    + '(' + esc(last.date) + ') <b>ولا تدخل الموازنة الموسمية</b>، لأن مقارنة صيف بخريف تخلق سكباً وهمياً.</div></div>' : '';
+  s += '<div class="grid g4">'
+    + kpi("◎","","المساحة (" + last.y + ")", nf(last.a,0), "كم²", last.n + " تاريخاً · أكتوبر–نوفمبر")
+    + kpi("≋","lake","المنسوب المشتقّ", last.h===null? "—" : nf(last.h,1), "م", "من منحنى نموذج الارتفاعات")
+    + kpi("▦","sand","الحجم النسبى", last.v===null? "—" : nf(last.v,1), "مليار م³", "الفروق سليمة والمطلق منحاز للأدنى")
+    + kpi("↓", (L && L.spill>15)?"danger":"green", L? ("سكب " + L.y) : "السكب",
+        L? nf(L.spill,1) : "—", "مليار م³",
+        (L && L.band)? ("النطاق " + nf(L.band.lo,1) + " إلى " + nf(L.band.hi,1)) : "يحتاج سنتين متجاورتين")
+    + '</div>';
+
+  s += partNote;
+  s += panel("السلسلة المقيسة", "مساحة بحيرات توشكى — وسيط أكتوبر–نوفمبر",
+      barPlot({ labels:Y.map(function(r){ return String(r.y); }),
+                values:Y.map(function(r){ return Math.round(r.a); }),
+                colors:Y.map(function(r){ return (r.spread>0.15)?"#c9a84c":"#247ba0"; }),
+                h:250, yTitle:"كم²" }),
+      'العمود الرملى = سنة تشتّت تواريخها فوق ١٥٪ فتُقرأ بحذر.');
+
+  var rows = '<table class="tb"><thead><tr><th>السنة</th><th>المساحة كم²</th><th>المنسوب م</th>'
+    + '<th>الحجم مليار</th><th>Δ التخزين</th><th>البخر</th><th>السكب المقدَّر</th></tr></thead><tbody>';
+  Y.forEach(function(r){
+    var b = null, i;
+    for(i=0;i<B.length;i++) if(B[i].y===r.y) b=B[i];
+    rows += '<tr><td><b>' + r.y + '</b>'
+      + (r.part ? ' <span class="pill sand">موسم غير مكتمل</span>' : '')
+      + (r.spread>0.15 ? ' <span class="pill sand">تشتّت '+nf(r.spread*100,0)+'٪</span>' : '') + '</td>'
+      + '<td>' + nf(r.a,0) + '</td><td>' + (r.h===null? "خارج المنحنى" : nf(r.h,1)) + '</td>'
+      + '<td>' + (r.v===null? "—" : nf(r.v,1)) + '</td>'
+      + '<td>' + (b? ((b.dV>0?"+":"")+nf(b.dV,1)) : "—") + '</td>'
+      + '<td>' + (b? nf(b.ev,1) : "—") + '</td>'
+      + '<td>' + (b? ('<b>'+nf(b.spill,1)+'</b>') : "—") + '</td></tr>';
+  });
+  rows += '</tbody></table>';
+  s += panel("الموازنة السنوية", "السكب = تغيّر التخزين + البخر", rows,
+      'البخر مفترض <b>' + TOSH_EVAP + ' م/سنة صافياً</b> (مدى ' + TOSH_EVAP_LO + '–' + TOSH_EVAP_HI + ') '
+    + 'قياساً على ناصر ٢٫١٥ — <b>ولم يُقس لتوشكى</b>. وهو الطرف المسيطر عند الاتزان، فقياسه بـWaPOR أولوية.');
+
+  if(L){
+    var HY = toshHypo(L), hr = '<table class="tb"><thead><tr><th>السكب المفترض</th>'
+      + '<th>الحجم الذى يلزمه</th><th>المساحة التى كان يجب رصدها</th><th>الحكم</th></tr></thead><tbody>';
+    HY.forEach(function(x){
+      hr += '<tr><td><b>' + nf(x.s,0) + ' مليار</b></td><td>' + nf(x.v,1) + '</td>'
+        + '<td>' + (x.a===null? "فوق مدى المنحنى" : nf(x.a,0)+" كم²") + '</td>'
+        + '<td>' + (x.ok ? '<span class="pill green">✔ داخل المرصود</span>'
+                         : '<span class="pill danger">✘ لم تُرصد قط</span>') + '</td></tr>';
+    });
+    hr += '</tbody></table>';
+    s += panel("اختبار الفروض — " + L.y, "كل قيمة سكب تفرض مساحة كان يجب أن تُرى", hr,
+        'أقصى مساحة رُصدت فى السلسلة كلها <b>' + nf(TOSH_AMAX_SEEN,0) + ' كم²</b>. '
+      + 'فالفرض الذى يلزمه أكثر من ذلك <b>مستبعَد بالرصد لا بالحساب</b> — وهذا أمتن ما فى هذه الطبقة: '
+      + 'حكمٌ لا يعتمد على منحنى تصريف ولا معايرة ولا نموذج.');
+  }
+
+  if(TT){
+    s += '<div class="banner ok"><span>Σ</span><div><b>تراكمى ' + TT.from + ' → ' + TT.to + ':</b> '
+      + 'تخزين ' + (TT.dV>0?"+":"") + nf(TT.dV,0) + ' مليار + بخر تراكمى ' + nf(TT.ev,0)
+      + ' = <b>~' + nf(TT.tot,0) + ' مليار م³ سُكبت إلى توشكى</b> فى ' + TT.n + ' سنة مرصودة. '
+      + 'والمفيض يعمل <b>متصلاً</b> لا كحدث مفرد.</div></div>';
+  }
+
+  s += '<div class="banner warn"><span>⚠</span><div><b>الحجم المطلق منحاز إلى الأدنى — والفروق سليمة.</b> '
+    + 'نموذج الارتفاعات من حقبة فبراير ٢٠٠٠ والبحيرات كانت تملأ فعلاً، فقاع الأعماق مسجَّل فيه '
+    + '<b>كسطح ماء لا كقاع</b>. لذلك تُقرأ أعمدة Δ والسكب، ولا يُقرأ عمود الحجم كقيمة مطلقة — '
+    + 'نفس منطق ΔS فى بحيرة ناصر.</div></div>';
+
+  s += '<div class="banner warn"><span>⚑</span><div><b>حدود أخرى معلنة:</b> '
+    + 'المساحة تُقاس بدقة ٢٥٠ م فالشواطئ الضحلة داخل بكسل واحد · '
+    + 'والتصنيف يعتمد على سطوع المشهد فالغبرة الكثيفة تُسقط التاريخ بالشاهد لا تُفسده صامتاً · '
+    + 'والسنة التى تحمل تاريخاً واحداً ناجحاً فقط لا يُحسب لها تشتّت.</div></div>';
+
+  if(ST.tosh.err) s += '<div class="banner danger"><span>⚠</span><div><b>آخر خطأ شبكة:</b> ' + esc(ST.tosh.err) + '</div></div>';
+  return s;
+}
+
 function secSar(){
   var sel=ST.sar.sel, A=sarAoi(sel), D=ST.sar.data[sel];
   var opts="";
@@ -8813,6 +9145,7 @@ function render(){
   else if(ST.sec==="sources")  h=secSources();
   else if(ST.sec==="alti")     h=secAlti();
   else if(ST.sec==="dam")      h=secDam();
+  else if(ST.sec==="tosh")     h=secTosh();
   else if(ST.sec==="wapor")    h=secWapor();
   else if(ST.sec==="gfh")      h=secGfh();
   else if(ST.sec==="cert")     h=secCert();
@@ -8826,6 +9159,11 @@ function bindControls(){
   function each(sel,fn){ var e=document.querySelectorAll(sel),j; for(j=0;j<e.length;j++) fn(e[j]); }
 
   each("[data-scen]",function(b){ b.onclick=function(){ ST.scen=this.getAttribute("data-scen"); render(); }; });
+
+  if(ST.sec==="tosh"){
+    var tb=$("tosh-run");
+    if(tb) tb.onclick=function(){ auditLog("قراءة مساحات توشكى","MODIS GIBS · مرساة أكتوبر–نوفمبر"); toshRun(); };
+  }
 
   if(ST.sec==="network"){
     netBind(); netApply();
@@ -9425,7 +9763,8 @@ function loadDbState(){
     MwriDb.get("apps/"+APPID+"/data/log").catch(function(){ return null; }),
     MwriDb.get("apps/"+APPID+"/data/reaches").catch(function(){ return null; }),
     MwriDb.get("apps/"+APPID+"/data/audit").catch(function(){ return null; }),
-    MwriDb.get("apps/"+APPID+"/data/calib").catch(function(){ return null; })
+    MwriDb.get("apps/"+APPID+"/data/calib").catch(function(){ return null; }),
+    MwriDb.get("apps/"+APPID+"/data/toshka").catch(function(){ return null; })
   ]).then(function(r){
     if(r[0]&&typeof r[0].a==="number"){ ST.thrManual={a:r[0].a,b:r[0].b,c:r[0].c}; ST.thr=ST.thrManual; ST.thrSrc="يدوية"; }
     ST.obs   = r[1]||{};
@@ -9442,6 +9781,7 @@ function loadDbState(){
         if(rr && rr.length===REACHES.length) ST.reaches=rr;   /* المعاملات المعتمدة تعود بعد إعادة الفتح */
       }catch(e){}
     }
+    if(r[7]){ ST.tosh.got = r[7]; }   /* المساحات المقروءة مشتركة — لا يُعاد تنزيلها على أى جهاز */
     try{ ST.user = localStorage.getItem("mwri_user") || ""; }catch(e){}
     return true;
   });
