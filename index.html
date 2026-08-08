@@ -233,7 +233,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.85</small>
+      <small id="buildtag">build 2.87</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -816,7 +816,7 @@ var ST = {
   mcal:{ on:false, busy:false, prog:"", err:"", arch:null, par:null, diag:{}, sum:null, yr:null, wy:null },
   rlv:{ sel:"khartoum", data:{}, arch:{}, loading:"", err:"" },
   gwm:{ sel:"gerd", data:{}, loading:"", err:"" },
-  nudge:true,
+  nudge:false,
   calM:{ running:false, done:0, res:{}, fail:[] },
   rr:{ busy:false, fit:null, err:"" },
   wp:{ kind:"evap", mapset:"L2-AETI-D", nDek:6, busy:false, prog:"", err:"",
@@ -2497,26 +2497,37 @@ function routeSystem(qEldiem, qJaulia, qAtbara, R){
    المرساة: القياس الميدانى المصحَّح إن توفّر، وإلا قيمة GloFAS عند حلفا.
    ===================================================================== */
 var NUDGE_L = 10;
+var NUDGE_OBS_W = 3;
+/* قرار حسم التعارض (بيلد 2.87):
+   المرساة صارت **قياساً ميدانياً فقط**. كانت قيمة GloFAS عند حلفا، وهى
+   سلسلة مُقصِّرة التوجيه (الديم→حلفا ٥ أيام مقيسة مقابل ١٢٫٥ فيزيائية)،
+   فكان التصحيح يسحب تتبّعنا نحو طور خاطئ: قياس الإزاحة على ٣٦٤١ يوماً
+   أعطى +٩٤٤ م³/ث على الساق الصاعدة و−٦٠٠ على الهابطة بارتباط +0.632
+   مع dQ/dt — وهذه بصمة فرق طور لا خطأ حالة ابتدائية. ونموذج الانحياز
+   a·q+b لا ينقذ لأنه يصحّح المقدار ولا يمسّ الطور. */
 function nudgeAnchor(){
   if(!ST.q||!ST.q.halfa) return null;
-  var k=nowIdx(), v=ST.q.halfa.q[k];
-  if(v===null||v===undefined||isNaN(v)) return null;
-  var bm=null; try{ bm=biasModel("halfa"); }catch(e){}
-  if(bm&&bm.valid){
-    var c=correctedQ("halfa", v);
-    if(c!==null&&!isNaN(c)) return { v:c, src:"corr" };
+  var O=(ST.obs&&ST.obs.halfa)?ST.obs.halfa:null;
+  if(!O) return null;
+  var T=ST.q.halfa.t, k=nowIdx(), best=null, j, r, dd;
+  for(j=Math.max(0,k-NUDGE_OBS_W); j<=Math.min(T.length-1,k+NUDGE_OBS_W); j++){
+    r=O[T[j]];
+    if(r&&typeof r.q==="number"&&!isNaN(r.q)){
+      dd=Math.abs(j-k);
+      if(best===null||dd<best.dd) best={ v:r.q, src:"obs", i:j, at:T[j], dd:dd };
+    }
   }
-  return { v:v, src:"model" };
+  return best;
 }
 function nudgeApply(arr){
   if(!ST.nudge||!arr) return arr;
   var A=nudgeAnchor(); if(!A) return arr;
-  var k=nowIdx();
-  if(k>=arr.length||arr[k]===null||arr[k]===undefined||isNaN(arr[k])) return arr;
-  var off=A.v-arr[k], out=arr.slice(), i;
+  var k=nowIdx(), ai=A.i;
+  if(ai<0||ai>=arr.length||arr[ai]===null||arr[ai]===undefined||isNaN(arr[ai])) return arr;
+  var off=A.v-arr[ai], out=arr.slice(), i, w;
   for(i=k;i<out.length;i++){
     if(out[i]===null||out[i]===undefined||isNaN(out[i])) continue;
-    var w=1-(i-k)/NUDGE_L; if(w<0) w=0;
+    w=1-(i-ai)/NUDGE_L; if(w<0) w=0; if(w>1) w=1;
     out[i]=out[i]+off*w;
   }
   return out;
@@ -2533,9 +2544,10 @@ function runRouting(){
      حتى يبقى الاتزان الحجمى وحفظ الكتلة محسوبين على الأرقام الخام */
   var ndg=null;
   if(ST.nudge){
-    var A0=nudgeAnchor(), k0=nowIdx();
-    if(A0 && sys.halfa[k0]!==null && sys.halfa[k0]!==undefined && !isNaN(sys.halfa[k0])){
-      ndg={ off:A0.v-sys.halfa[k0], anchor:A0.v, raw:sys.halfa[k0], src:A0.src, L:NUDGE_L };
+    var A0=nudgeAnchor();
+    if(A0 && sys.halfa[A0.i]!==null && sys.halfa[A0.i]!==undefined && !isNaN(sys.halfa[A0.i])){
+      ndg={ off:A0.v-sys.halfa[A0.i], anchor:A0.v, raw:sys.halfa[A0.i], src:A0.src,
+            L:NUDGE_L, at:A0.at, dd:A0.dd };
       sys.halfa=nudgeApply(sys.halfa);
     }
   }
@@ -3565,6 +3577,68 @@ function secCompose(){
   var s=scenBar();
   s+=panel("تركيب الوارد لبحيرة ناصر اليوم","تفكيك مطابق — ماسكينجم خطى فتنطبق قاعدة التراكب",
     '<div class="chart-box" style="padding:4px">'+stackBarSVG(items, tot)+'</div>');
+
+  /* ---- ممر الموجة — مرحلة ٠ ------------------------------------------
+     تطوّر مساهمة كل رافد عبر النافذة كاملة، مرسوماً من rt.comp المحسوب
+     أصلاً بالتفكيك الخطى. لا حساب جديد، ولا مساس بالتتبّع ولا بتصحيح
+     الحالة — الرسم قراءة خالصة لأرقام موجودة.
+     -------------------------------------------------------------------- */
+  var CT=rt.t, CN=CT.length, ci, cb, cw, ca, cok;
+  var cBase=[], cum1=[], cum2=[], cum3=[];
+  for(ci=0; ci<CN; ci++){
+    cb=rt.comp.blue[ci]; cw=rt.comp.white[ci]; ca=rt.comp.atbara[ci];
+    cok = (cb!==null&&cb!==undefined&&!isNaN(cb)
+        && cw!==null&&cw!==undefined&&!isNaN(cw)
+        && ca!==null&&ca!==undefined&&!isNaN(ca));
+    cBase.push(cok?0:null);
+    cum1.push(cok? cb : null);
+    cum2.push(cok? cb+cw : null);
+    cum3.push(cok? cb+cw+ca : null);
+  }
+  s+=panel("ممر الموجة — تطوّر المساهمة عبر النافذة","كل شريحة رافد، وسمكها مساهمته عند حلفا فى ذلك اليوم",
+    '<div class="chart-box">'+plot({
+      t:CT, h:320, zero:true, nowIdx:k, yTitle:"م³/ث عند حلفا",
+      bands:[
+        { lo:cBase, hi:cum1, color:"#247ba0", op:0.55 },
+        { lo:cum1,  hi:cum2, color:"#4d7c5a", op:0.55 },
+        { lo:cum2,  hi:cum3, color:"#b46f4b", op:0.55 }
+      ],
+      series:[ { v:cum3, color:"#1d3557", wd:1.6, mark:k } ]
+    })+'</div>'
+    +'<div class="legend">'
+    +'<span><i style="background:#247ba0"></i>النيل الأزرق</span>'
+    +'<span><i style="background:#4d7c5a"></i>النيل الأبيض</span>'
+    +'<span><i style="background:#b46f4b"></i>عطبرة</span>'
+    +'<span><i style="background:#1d3557"></i>المجموع عند حلفا</span>'
+    +'</div>',
+    'اللوحة العليا لقطة اليوم، وهذه هى نفسها ممتدة على الزمن: سمك كل شريحة هو تصرف ذلك الرافد '
+    +'<b>بعد تتبّعه إلى حلفا</b> لا عند منبعه. والمجموع مطابق لناتج النموذج بالبناء لأن ماسكينجم عامل خطى.');
+
+  /* ---- متى تصل ذروة كل رافد إلى حلفا ---- */
+  var pkB=peakOf(rt.comp.blue, CT), pkW=peakOf(rt.comp.white, CT),
+      pkA=peakOf(rt.comp.atbara, CT), pkH=peakOf(rt.atHalfa, CT);
+  function pkCell(p){
+    if(!p || p.i<0 || p.t===null) return '<td class="num">—</td><td>—</td>';
+    var rel=p.i-k;
+    var when = (rel===0)? "اليوم" : (rel>0? ("بعد "+rel+" يوم") : ("منذ "+(-rel)+" يوم"));
+    var edge = (p.i<=0 || p.i>=CN-1)? " ⚠ عند طرف النافذة" : "";
+    return '<td class="num">'+nf(p.v,0)+'</td><td>'+esc(dmy(p.t)+" — "+when+edge)+'</td>';
+  }
+  var pkRows=
+     '<tr><td><b>النيل الأزرق</b></td>'+pkCell(pkB)+'<td class="num">'+nf(rt.lag,1)+'</td><td class="num">٥</td></tr>'
+    +'<tr><td><b>النيل الأبيض</b></td>'+pkCell(pkW)+'<td class="num">'+nf(rt.lagWhite,1)+'</td><td class="num">٢</td></tr>'
+    +'<tr><td><b>عطبرة</b></td>'+pkCell(pkA)+'<td class="num">'+nf(rt.lagAtbara,1)+'</td><td class="num">٤</td></tr>'
+    +'<tr class="hi"><td><b>المجموع عند حلفا</b></td>'+pkCell(pkH)+'<td class="num">—</td><td class="num">—</td></tr>';
+  s+=panel("ذروة كل رافد عند حلفا","ومقارنة زمن الوصول المفترض بالمقيس",
+    '<div class="tb-wrap"><table class="tb"><thead><tr><th>الرافد</th><th>ذروة مساهمته (م³/ث)</th>'
+    +'<th>تاريخها</th><th>زمن الوصول المفترض (يوم)</th><th>المقيس داخل GloFAS (يوم)</th>'
+    +'</tr></thead><tbody>'+pkRows+'</tbody></table></div>',
+    '<b>تعارض محسوم — بيلد 2.87.</b> أزمنة الوصول المستعملة فى التتبّع مشتقّة من ثوابت ماسكينجم، '
+    +'بينما الارتباط المتقاطع بين سلاسل GloFAS نفسها (٢٠١٦–٢٠٢٥، منزوعة الموسمية) يعطى أزمنة أقصر بكثير: '
+    +'الديم→حلفا ٥ أيام (r=0.82) والأبيض→حلفا يومان (r=0.84) وعطبرة→حلفا ٤ أيام (r=0.73). '
+    +'والمسافة تحسم لصالح الأطول: الديم→حلفا نحو ١٩٩٠ كم، فـ١٢٫٥ يوماً تعنى سرعة موجة ١٫٨٥ م/ث وهى معقولة، '
+    +'بينما ٥ أيام تعنى ٤٫٦٣ م/ث وهى مستحيلة على النيل. أى أن <b>GloFAS يُقصّر توجيه النيل الأدنى</b> والثوابت عندنا أقرب للفيزياء. '
+    +'<b>والقرار المعتمد: تبقى ١٢٫٥ ولا تُمسّ، وGloFAS مُدخَل عند الروافد الثلاثة فقط ولا يكون مرجعاً أسفل الخرطوم</b> — '+'ولذلك أُلغيت مرساة GloFAS فى تصحيح الحالة وصارت قياساً ميدانياً فقط. '+'وتُقرأ تواريخ الذروة أعلاه كتوقيت النموذج لا كتوقيت مرصود، إلى أن يصدّقه قياس أرضى.');
 
   var rows=
     '<tr><td><b>النيل الأزرق</b> (عبر ٤ مقاطع)</td><td class="num">'+nf(b,0)+'</td><td class="num">'+nf(tot>0?b/tot*100:0,1)+'%</td><td>'+esc(trend(rt.comp.blue))+'</td></tr>'
@@ -6315,23 +6389,32 @@ function nudgePanel(){
   var body=ctl;
   if(ST.nudge&&n){
     body+='<div class="grid g3">'
-      +kpi("⊙", n.src==="corr"?"green":"", "المرساة اليوم", nf(n.anchor,0), "م³/ث",
-           n.src==="corr"?"قياس ميدانى مصحَّح":"قيمة GloFAS عند حلفا")
+      +kpi("⊙","green","المرساة", nf(n.anchor,0), "م³/ث",
+           "قياس ميدانى "+esc(dmy(n.at))+(n.dd?(" — قبل "+n.dd+" يوم"):" — اليوم"))
       +kpi("Δ", Math.abs(n.off)>500?"sand":"", "الفارق المُصحَّح", (n.off>0?"+":"")+nf(n.off,0), "م³/ث",
            "المُتتبَّع الخام "+nf(n.raw,0))
-      +kpi("◷","", "مدى التلاشى", nf(n.L,0), "يوم", "كامل اليوم ← صفر عند +"+n.L)
+      +kpi("◷","", "مدى التلاشى", nf(n.L,0), "يوم", "من تاريخ الرصدة ← صفر عند +"+n.L)
       +'</div>';
   } else if(ST.nudge){
-    body+='<p class="note">لا مرساة متاحة الآن (قيمة حلفا غير محمَّلة).</p>';
+    body+='<p class="note"><b>مُفعَّل ولا يعمل — لا رصدة ميدانية عند حلفا داخل ±'+NUDGE_OBS_W+' أيام.</b> '
+      +'المعروض تتبّع خام. أدخل قياساً فى قسم «القياسات الميدانية» ليعمل التصحيح.</p>';
   } else {
-    body+='<p class="note">التصحيح موقوف — المعروض تتبّع خام من الديم بلا ربط بآخر قيمة معروفة عند حلفا.</p>';
+    body+='<p class="note">التصحيح موقوف افتراضياً — المعروض تتبّع خام من الديم بلا ربط بأى مرساة.</p>';
   }
-  return panel("تصحيح الحالة","ربط التتبّع بآخر قيمة معروفة عند المخرج", body,
-    'التتبّع يبدأ من الديم فيتراكم انحرافه على ٢٬٦٢٠ كم. التصحيح يزيح المُتتبَّع ليطابق المرساة اليوم، '
-    +'ثم <b>يتلاشى خطياً حتى الصفر عند +'+NUDGE_L+' يوماً</b> — لأن الأفق البعيد تحكمه الأمطار لا الحالة الابتدائية. '
-    +'<b>يُطبَّق على المخرج عند حلفا وعلى أعضاء المروحة</b>، ولا يُطبَّق على المقاطع الوسيطة حتى يبقى '
-    +'الاتزان الحجمى وحفظ الكتلة محسوبين على الأرقام الخام. '
-    +'وحين تُدخل قياساتك الميدانية تصير المرساة <b>مقيسة</b> لا مُنمذَجة، وهذا هو مدخل بياناتك إلى قلب التنبؤ.');
+  return panel("تصحيح الحالة","المرساة قياس ميدانى فقط — قرار حسم التعارض", body,
+    '<b>ما تغيّر فى بيلد 2.87 ولماذا.</b> كانت المرساة قيمة GloFAS عند حلفا حين لا يتوفّر قياس. '
+    +'وقياس الإزاحة على ٣٦٤١ يوماً (٢٠١٦–٢٠٢٥) أظهر أنها <b>ليست خطأ حالة ابتدائية بل فرق طور</b>: '
+    +'متوسط الإزاحة <b>+٩٤٤ م³/ث على الساق الصاعدة و−٦٠٠ على الهابطة</b>، بارتباط <b>+0.632</b> مع معدّل التغيّر dQ/dt. '
+    +'وخطأ الحالة الحقيقى يجب أن يكون عديم الإشارة تجاه الساق. '
+    +'السبب أن سلسلة GloFAS عند حلفا <b>مُقصِّرة التوجيه</b>: الديم→حلفا خمسة أيام داخلها مقابل ١٢٫٥ يوماً فى تتبّعنا، '
+    +'والمسافة نحو ١٩٩٠ كم تجعل ١٢٫٥ تعنى سرعة موجة ١٫٨٥ م/ث (معقولة) و٥ تعنى ٤٫٦٣ م/ث (مستحيلة على النيل). '
+    +'فكان التصحيح يسحب تتبّعنا الأقرب للفيزياء نحو طور أسبق. '
+    +'ونموذج الانحياز a·q+b لم يكن ينقذ لأنه يصحّح <b>المقدار ولا يمسّ الطور</b>. '
+    +'<b>القرار: GloFAS مُدخَل عند الروافد الثلاثة فقط، ولا يكون مرساةً أسفل الخرطوم.</b> '
+    +'وأثر جانبى مهم: التصحيح كان يُجبر <b>كل أعضاء المروحة الخمسين على قيمة واحدة عند اليوم صفر</b> '
+    +'(الوزن =١ عند المرساة)، فيُظهر عدم يقين صفرياً ثم يُعيد نفخ المروحة بجدول ثابت لا بقابلية التنبؤ الحقيقية — '
+    +'وبإيقافه يستعيد اليوم صفر اتساعه الصادق. '
+    +'ويبقى التصحيح مشروعاً تماماً حين تكون المرساة <b>قياساً ميدانياً</b>، وحينها يُحسب الفارق عند تاريخ الرصدة نفسه ويتلاشى منه.');
 }
 
 /* =====================================================================
