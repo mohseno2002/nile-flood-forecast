@@ -237,7 +237,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.92</small>
+      <small id="buildtag">build 2.95</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -732,7 +732,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.94";
+var BUILD = "2.95";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -3193,7 +3193,8 @@ function lakePick(kind){
   var b=(Dg&&Dg.series&&Dg.series.length)? Dg.series[Dg.series.length-1] : null;
   if(!a&&!b) return null;
   var useG = (!a) ? true : ((!b) ? false : (altiDayNum(b.t)>altiDayNum(a.t)));
-  var B = useG ? srcBias(kind) : { ok:true, n:0, med:0 };
+  var Bm = srcBias(kind);  /* تُقاس دائماً — لازمة للفرق متسق الإطار حتى عند قيادة DAHITI */
+  var B = useG ? Bm : { ok:true, n:0, med:0 };
   var pick=useG?b:a, oth=useG?a:b;
   var o={ src:(useG?"nasa":"dahiti"), srcNm:(useG?"NASA GWM":"DAHITI"),
           t:pick.t, raw:pick.v, u:(pick.u!==undefined?pick.u:null),
@@ -3201,8 +3202,15 @@ function lakePick(kind){
           why:(B.why||""), other:null };
   if(useG){ if(B.ok) o.adj=-B.med; else o.adjOk=false; }
   o.v=o.raw+o.adj;
-  if(oth) o.other={ srcNm:(useG?"DAHITI":"NASA GWM"), t:oth.t, v:oth.v,
-                    lag:Math.abs(altiDayNum(o.t)-altiDayNum(oth.t)), dv:(o.raw-oth.v) };
+  if(oth){
+    /* dv فرق خام بين إطارين رأسيين مختلفين (EIGEN-6C4 مقابل EGM2008).
+       dvAdj هو الفرق بعد ردّ المصدرين لإطار DAHITI بالإزاحة المقيسة — وهو
+       المقياس الصحيح للتصادق؛ يبقى null إن لم تُقس الإزاحة، بلا اختلاق. */
+    var dvAdj=null;
+    if(Bm && Bm.ok) dvAdj = useG ? (o.v - oth.v) : (o.v - (oth.v - Bm.med));
+    o.other={ srcNm:(useG?"DAHITI":"NASA GWM"), t:oth.t, v:oth.v,
+              lag:Math.abs(altiDayNum(o.t)-altiDayNum(oth.t)), dv:(o.raw-oth.v), dvAdj:dvAdj };
+  }
   o.age=Math.max(0, Math.floor(Date.now()/864e5)-altiDayNum(o.t));
   return o;
 }
@@ -3463,7 +3471,7 @@ var DEC_AGREE=0.50;      /* حدّ التصادق بين المصدرين بال
 
 function decRate(win){
   /* معدل تغيّر المنسوب المرصود (م/يوم) على أقرب نافذة إلى win.
-     حارس ٨–٧٥ يوماً هو نفسه حارس damIntervals — فترة أقصر من دورة المدار
+     حارس ٨–٧٥ يوماً (أضيق من حارس damIntervals ٤–٧٥ عمداً) — فترة أقصر من دورة المدار
      لا تعطى ميلاً، وأطول من ٧٥ يوماً تخلط موسمين. */
   var S=lakeSeries("nasser"); if(!S||S.length<2) return null;
   var last=S[S.length-1], tn=altiDayNum(last.t), i, best=null, bd=1e9;
@@ -3515,10 +3523,15 @@ function decNext(h, rate){
 function decTrust(){
   var P=lakePick("nasser");
   if(!P) return { k:0, nm:"لا رصدة متاحة", cls:"danger" };
-  if(P.other && P.other.lag<=10 && Math.abs(P.other.dv)<=DEC_AGREE)
-    return { k:3, nm:"مرصود ومُصادَق من مصدرين مستقلين", cls:"ok", o:P.other };
-  if(P.other)
-    return { k:2, nm:"مرصود — والمصدران متباعدان", cls:"warn", o:P.other };
+  if(P.other){
+    /* الحكم على الفرق متسق الإطار (بعد ردّ الإزاحة المقيسة) متى وُجد؛
+       وإلا فالفرق الخام مع إعلان أن الإزاحة غير مقيسة */
+    var meas=(P.other.dvAdj!==null&&P.other.dvAdj!==undefined);
+    var dd=meas? P.other.dvAdj : P.other.dv;
+    if(P.other.lag<=10 && Math.abs(dd)<=DEC_AGREE)
+      return { k:3, nm:"مرصود ومُصادَق من مصدرين مستقلين", cls:"ok", o:P.other, dd:dd, meas:meas };
+    return { k:2, nm:"مرصود — والمصدران متباعدان", cls:"warn", o:P.other, dd:dd, meas:meas };
+  }
   return { k:1, nm:"مرصود من مصدر واحد", cls:"sand" };
 }
 
@@ -3573,7 +3586,8 @@ function decFlip(D){
   }
   if(D.trust&&D.trust.o){
     L.push("تباعد المصدرين فوق "+nf(DEC_AGREE*100,0)+" سم يُسقط وسم التصادق (الفارق الآن "
-      +nf(Math.abs(D.trust.o.dv)*100,0)+" سم بفاصل "+nf(D.trust.o.lag,0)+" يوماً).");
+      +nf(Math.abs(D.trust.dd)*100,0)+" سم بفاصل "+nf(D.trust.o.lag,0)+" يوماً"
+      +(D.trust.meas?" بعد ردّ الإزاحة المقيسة":"")+").");
   }
   if(D.alert){
     L.push("تغيّر مستوى الإنذار عند حلفا عن ("+D.alert.nm+") يغيّر أفق التحضير.");
@@ -3624,7 +3638,8 @@ function decCard(){
   for(i=0;i<F.length;i++) h+='<li>'+esc(F[i])+'</li>';
   h+='</ul></td></tr>';
   h+='<tr><th>ثقة الرقم</th><td><span class="badge '+esc(T.cls)+'">'+esc(T.nm)+'</span>'
-    +(T.o? ' · الفارق '+nf(Math.abs(T.o.dv)*100,0)+' سم بفاصل '+nf(T.o.lag,0)+' يوماً ('+esc(T.o.srcNm)+')':"")
+    +(T.o? ' · الفارق '+nf(Math.abs(T.dd)*100,0)+' سم بفاصل '+nf(T.o.lag,0)+' يوماً ('+esc(T.o.srcNm)
+      +(T.meas?' · بعد ردّ إزاحة المصدرين المقيسة':' · فرق خام — إزاحة المصدرين غير مقيسة')+')':"")
     +'</td></tr>';
   h+='</tbody></table></div>';
   return h;
@@ -10048,7 +10063,7 @@ function publish(){
 function boot(){
   $("buildtag").textContent="build "+BUILD;
   buildNav();
-  selectSection("command");
+  selectSection(ST.sec);  /* القسم الافتتاحى هو الافتراضى المعلن فى ST — التثبيت هنا كان يتجاوز بطاقة القرار ويعيد المستخدم عند التحديث */
   setConn(false,"جارٍ الاتصال…");
   clearErr();
   MwriDb.onStatus(setSync);
