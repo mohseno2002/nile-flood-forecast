@@ -728,7 +728,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.92";
+var BUILD = "2.93";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -3083,7 +3083,7 @@ var NASSER_ZONES=[
 function nasserCurve(id){ var i; for(i=0;i<NASSER_CURVES.length;i++) if(NASSER_CURVES[i].id===id) return NASSER_CURVES[i]; return NASSER_CURVES[0]; }
 function nasserToshka(h){
   /* الفارق عن عتبة السكب لمفيض توشكى — رقم وزارى لا مشتقّ من النموذج */
-  if(h===null||h===undefined||isNaN(h)) return null;
+  if(typeof h!=="number"||!isFinite(h)) return null;
   return h-TOSHKA_H;
 }
 var NAS_DATUM_DEF=-0.70;
@@ -3105,7 +3105,7 @@ function nasserH(hAlti){
 }
 function nasserStore(h, id){
   /* استيفاء خطى قطعى — يرجع مليار م³، وnull خارج مدى المعالم بلا استقراء */
-  if(h===null||h===undefined||isNaN(h)) return null;
+  if(typeof h!=="number"||!isFinite(h)) return null;
   var C=nasserCurve(id), P=C.pts, i;
   if(h<P[0].h || h>P[P.length-1].h) return null;
   for(i=0;i<P.length-1;i++){
@@ -3118,7 +3118,7 @@ function nasserStore(h, id){
 }
 function nasserSlope(h, id){
   /* مليار م³ لكل متر عند هذا المنسوب = المساحة المكافئة للمسطح */
-  if(h===null||h===undefined||isNaN(h)) return null;
+  if(typeof h!=="number"||!isFinite(h)) return null;
   var C=nasserCurve(id), P=C.pts, i;
   if(h<P[0].h || h>P[P.length-1].h) return null;
   for(i=0;i<P.length-1;i++)
@@ -3126,7 +3126,7 @@ function nasserSlope(h, id){
   return null;
 }
 function nasserZone(h){
-  if(h===null||h===undefined||isNaN(h)) return null;
+  if(typeof h!=="number"||!isFinite(h)) return null;
   var i; for(i=0;i<NASSER_ZONES.length;i++) if(h<NASSER_ZONES[i].to) return NASSER_ZONES[i];
   return { to:999, nm:"فوق الحد الأقصى 182 م", cls:"danger" };
 }
@@ -5687,7 +5687,7 @@ var DON_ZERO=210.60, DON_BREAK=14.00, DON_LO=10.00, DON_HI=16.00;
 var DON_NOFLOW=1572.5/168.35;      /* ٩٫٣٤ م — المنسوب الذى ينعدم عنده التصريف فعلياً */
 function dongolaQ(H, cms){
   /* يرجع مليون م³/يوم افتراضاً، أو م³/ث إن cms، وnull خارج نطاق الصلاحية */
-  if(H===null||H===undefined||isNaN(H)) return null;
+  if(typeof H!=="number"||!isFinite(H)) return null;
   if(H<DON_LO||H>DON_HI) return null;          /* لا استقراء خارج النطاق المعتمد */
   var q=(H<=DON_BREAK) ? (168.35*H-1572.5) : (211.27*H-2173.4);
   if(q<0) q=0;
@@ -6138,7 +6138,7 @@ var DALT_HI={ a:269.4032, h0:10.23, m:0.831 };   /* يونيو–أكتوبر */
 var DALT_LO={ a:0.2199,   h0:6.00,  m:3.700 };   /* نوفمبر–مايو (بلا يناير) */
 var DALT_FIT_LO=10.10, DALT_FIT_HI=15.40;        /* مدى الملاءمة الفعلى */
 function dongolaQAlt(H, cms, mm){
-  if(H===null||H===undefined||isNaN(H)) return null;
+  if(typeof H!=="number"||!isFinite(H)) return null;
   if(H<DON_LO||H>DON_HI) return null;
   var hi=(mm==="06"||mm==="07"||mm==="08"||mm==="09"||mm==="10");
   var C=hi?DALT_HI:DALT_LO;
@@ -6152,7 +6152,7 @@ function dongolaQAlt(H, cms, mm){
 function donActiveQ(H, cms, mm){ return dongolaQAlt(H,cms,mm); }
 
 function khartoumQ(H, cms){
-  if(H===null||H===undefined||isNaN(H)) return null;
+  if(typeof H!=="number"||!isFinite(H)) return null;
   if(H<KRT_TB[0][0]||H>KRT_TB[KRT_TB.length-1][0]) return null;
   var i, q=null;
   for(i=0;i<KRT_TB.length-1;i++){
@@ -7991,7 +7991,7 @@ function damIntervals(id){
     var days=altiDayNum(S[i].t)-altiDayNum(S[i-1].t);
     if(days<4||days>75) continue;
     var v1=hvV(R,S[i-1].v), v2=hvV(R,S[i].v);
-    if(v1.v===null||v2.v===null) continue;
+    if(v1.out||v2.out) continue;   /* فترة خارج مدى منحنى التخزين تُرفَض — hvV تثبّت على الطرف ولا ترجع null */
     var dV=v2.v-v1.v;
     var dS=dV*1e9/(days*86400);
     var A=hvArea(R,(S[i-1].v+S[i].v)/2);
