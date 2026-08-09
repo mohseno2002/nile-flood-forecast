@@ -170,8 +170,12 @@ table.tb tr.hi td{background:#f2f7f4}
 .axis-lbl{font-family:"IBM Plex Mono",monospace;font-size:8.5px;fill:#8a938f}
 .axis-ttl{font-family:"IBM Plex Sans Arabic",sans-serif;font-size:9.5px;fill:var(--muted);font-weight:700}
 
+.dec-tbl th{width:150px;vertical-align:top;text-align:right;white-space:nowrap}
+.dec-tbl td{line-height:1.75}
+.dec-flip{margin:4px 0 0;padding-inline-start:18px}
+.dec-flip li{margin-bottom:4px}
 @media print{
-  .side-nav,.mob-nav,.topbar .actions,.netbar,.ctrl{display:none!important}
+  .side-nav,.mob-nav,.topbar .actions,.netbar,.ctrl,.no-print{display:none!important}
   .app-shell{grid-template-columns:1fr}
   .panel,.kpi-card{break-inside:avoid;box-shadow:none}
   body{background:#fff}
@@ -728,7 +732,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.93";
+var BUILD = "2.94";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -770,6 +774,7 @@ var SCENARIOS = [
 ];
 
 var SECTIONS = [
+  {id:"decide",   icon:"◆", eyebrow:"لصاحب القرار",          title:"بطاقة القرار — صفحة واحدة"},
   {id:"command",  icon:"⌂", eyebrow:"مركز قيادة الموجة",    title:"غرفة الفيضان"},
   {id:"alti",     icon:"≋", eyebrow:"الألتيمترى",           title:"المناسيب المرصودة — بحيرات ومجرى"},
   {id:"trust",    icon:"⚖", eyebrow:"حالة كل رقم",           title:"سجل الثقة — ما هو مرصود وما هو مُنمذَج"},
@@ -799,7 +804,7 @@ var PAST = 45, FUT = 30, NMEM = 50;
 var MEMBER_STATIONS = ["eldiem","jaulia","atbara"];
 
 var ST = {
-  sec:"command",
+  sec:"decide",
   q:null, mem:null, rain:null,
   clim:null, climLoading:false, climStation:"halfa", climAuto:false,
   scen:"nrm",
@@ -3438,6 +3443,238 @@ function altiBootLakes(){
 }
 
 /* ---- 1. غرفة الفيضان ---- */
+/* ═══════════ بطاقة القرار — قسم decide (بيلد 2.94) ═══════════
+   قاعدة البناء: لا معادلة جديدة ولا مصدر جديد. كل رقم هنا مقروء من دوال
+   قائمة (lakePick · nasserNow · nasserStore · alertLevel · cur)، والمسار
+   استقراء خطى معلن على معدل تغيّر المنسوب المرصود — لا نموذج ولا تنبؤ.
+   وسبب بنائه على المنسوب لا على الوارد: المنسوب مرصود ومُصادَق من مصدرين
+   ومرجعه محسوم رسمياً، والوارد ما زال نمذجة غير مُعايَرة على قياس أرضى. */
+
+var DEC_ACTIONS=[
+  { h:147.00, nm:"التخزين الميت",        act:"أدنى منسوب لتشغيل التوربينات" },
+  { h:160.00, nm:"بداية التخزين الحى",   act:"بدء النطاق التشغيلى" },
+  { h:175.00, nm:"مستهدف ١ نوفمبر",      act:"المنسوب المستهدف بنهاية الفيضان" },
+  { h:178.00, nm:"عتبة مفيض توشكى",      act:"بدء السكب لمفيض توشكى" },
+  { h:182.00, nm:"أقصى منسوب آمن",       act:"تشغيل مفيض الطوارئ بالكامل" }
+];
+var DEC_FLAT=0.002;      /* أقل من ٢ مم/يوم يُعدّ ثباتاً لا اتجاهاً */
+var DEC_STALE=45;        /* عمر الرصدة الذى يُوقف القرار */
+var DEC_AGREE=0.50;      /* حدّ التصادق بين المصدرين بالمتر */
+
+function decRate(win){
+  /* معدل تغيّر المنسوب المرصود (م/يوم) على أقرب نافذة إلى win.
+     حارس ٨–٧٥ يوماً هو نفسه حارس damIntervals — فترة أقصر من دورة المدار
+     لا تعطى ميلاً، وأطول من ٧٥ يوماً تخلط موسمين. */
+  var S=lakeSeries("nasser"); if(!S||S.length<2) return null;
+  var last=S[S.length-1], tn=altiDayNum(last.t), i, best=null, bd=1e9;
+  for(i=0;i<S.length-1;i++){
+    var gap=tn-altiDayNum(S[i].t);
+    if(gap<8||gap>75) continue;
+    var dd=Math.abs(gap-(win||30));
+    if(dd<bd){ bd=dd; best=S[i]; }
+  }
+  if(!best) return null;
+  var days=tn-altiDayNum(best.t);
+  return { mPerDay:(last.v-best.v)/days, days:days, from:best.t, to:last.t };
+}
+
+function decWorst(){
+  /* أسرع صعود مرصود فعلياً فى آخر ٤٠٠ يوم على نوافذ ٢٠–٤٥ يوماً.
+     رقم من السلسلة نفسها لا مضاعِف مفترَض. */
+  var S=lakeSeries("nasser"); if(!S||S.length<3) return null;
+  var tn=altiDayNum(S[S.length-1].t), i, j, best=null;
+  for(i=0;i<S.length-1;i++){
+    if(tn-altiDayNum(S[i].t)>400) continue;
+    for(j=i+1;j<S.length;j++){
+      var d=altiDayNum(S[j].t)-altiDayNum(S[i].t);
+      if(d<20||d>45) continue;
+      var r=(S[j].v-S[i].v)/d;
+      if(best===null||r>best.r) best={ r:r, d:d, from:S[i].t, to:S[j].t };
+    }
+  }
+  return best;
+}
+
+function decNext(h, rate){
+  /* العتبة الأقرب فى اتجاه الحركة، والزمن إليها بالأيام */
+  if(typeof h!=="number"||!isFinite(h)) return null;
+  if(typeof rate!=="number"||!isFinite(rate)) return null;
+  if(Math.abs(rate)<DEC_FLAT) return { stable:true };
+  var i, cand=null;
+  for(i=0;i<DEC_ACTIONS.length;i++){
+    var T=DEC_ACTIONS[i];
+    if(rate>0 && T.h>h && (cand===null||T.h<cand.h)) cand=T;
+    if(rate<0 && T.h<h && (cand===null||T.h>cand.h)) cand=T;
+  }
+  if(cand===null) return { none:true };
+  var days=(cand.h-h)/rate;
+  if(!isFinite(days)||days<0) return { none:true };
+  return { h:cand.h, nm:cand.nm, act:cand.act, days:days, up:(rate>0) };
+}
+
+function decTrust(){
+  var P=lakePick("nasser");
+  if(!P) return { k:0, nm:"لا رصدة متاحة", cls:"danger" };
+  if(P.other && P.other.lag<=10 && Math.abs(P.other.dv)<=DEC_AGREE)
+    return { k:3, nm:"مرصود ومُصادَق من مصدرين مستقلين", cls:"ok", o:P.other };
+  if(P.other)
+    return { k:2, nm:"مرصود — والمصدران متباعدان", cls:"warn", o:P.other };
+  return { k:1, nm:"مرصود من مصدر واحد", cls:"sand" };
+}
+
+function decState(){
+  /* الحالة الكاملة لبطاقة القرار — null صريح فى كل فراغ بلا اختلاق */
+  var N=nasserNow(); if(!N) return null;
+  var R=decRate(30), W=decWorst(), T=decTrust();
+  var out={ N:N, rate:R, worst:W, trust:T, proj:{}, next:null, nextWorst:null,
+            stale:(N.age>DEC_STALE), halfa:null, alert:null };
+  var qh=cur("halfa");
+  if(qh!==null){ out.halfa=qh; out.alert=alertLevel(qh); }
+  if(R){
+    out.proj[10]=N.h+R.mPerDay*10;
+    out.proj[30]=N.h+R.mPerDay*30;
+    out.next=decNext(N.h, R.mPerDay);
+  }
+  if(W && W.r>0) out.nextWorst=decNext(N.h, W.r);
+  return out;
+}
+
+function decVerdict(D){
+  /* الحكم — قاعدة معلنة لا اجتهاد: العمر أولاً ثم الزمن إلى العتبة */
+  if(!D) return { nm:"لا رصدة — لا حكم", cls:"danger",
+                  why:"لم تُجلب رصدة منسوب لبحيرة ناصر بعد." };
+  if(D.stale) return { nm:"القرار مؤجَّل — الرصدة قديمة", cls:"warn",
+    why:"عمر آخر رصدة "+nf(D.N.age,0)+" يوماً، فوق حدّ "+DEC_STALE+" يوماً. تباعد الرصدات طبيعى بحكم المدار، والحكم يُستأنف عند أول رصدة جديدة." };
+  if(!D.rate) return { nm:"لا حكم — المعدل غير محسوب", cls:"warn",
+    why:"لا توجد رصدتان بينهما ٨–٧٥ يوماً لاشتقاق معدل التغيّر." };
+  if(D.next&&D.next.stable) return { nm:"مستقر — لا قرار مطلوب", cls:"ok",
+    why:"معدل التغيّر دون "+nf(DEC_FLAT*1000,0)+" مم/يوم، فلا عتبة تُبلَغ بالمسار الحالى." };
+  if(D.next&&D.next.days!==undefined&&D.next.days<=10) return { nm:"قرار مطلوب اليوم", cls:"danger",
+    why:"العتبة الأقرب ("+D.next.nm+") تُبلَغ خلال "+nf(D.next.days,0)+" يوماً بالمعدل الحالى — والإجراء المقابل: "+D.next.act+"." };
+  if(D.next&&D.next.days!==undefined&&D.next.days<=30) return { nm:"تحضير — لا قرار اليوم", cls:"warn",
+    why:"العتبة الأقرب ("+D.next.nm+") تُبلَغ خلال "+nf(D.next.days,0)+" يوماً، أى داخل أفق التحضير لا أفق التنفيذ." };
+  return { nm:"متابعة — لا قرار مطلوب", cls:"ok",
+    why:(D.next&&D.next.days!==undefined)
+        ? ("أقرب عتبة على بعد "+nf(D.next.days,0)+" يوماً بالمعدل الحالى.")
+        : "لا عتبة فى اتجاه الحركة الحالى." };
+}
+
+function decFlip(D){
+  /* ما الذى يقلب الحكم — شروط مرقّمة بأرقامها لا عبارات عامة */
+  var L=[];
+  if(!D) return L;
+  if(D.worst&&D.next&&D.nextWorst&&D.next.days!==undefined&&D.nextWorst.days!==undefined){
+    L.push("عودة الصعود إلى أسرع معدل مرصود ("+nf(D.worst.r*100,1)+" سم/يوم بين "
+      +dmy(D.worst.from)+" و"+dmy(D.worst.to)+") تُقدّم بلوغ العتبة من "
+      +nf(D.next.days,0)+" إلى "+nf(D.nextWorst.days,0)+" يوماً.");
+  }
+  if(D.rate){
+    L.push("رصدة جديدة تخالف الاستقراء بأكثر من ١٥ سم تُبطل المسار وتُعاد قراءته.");
+  }
+  if(D.trust&&D.trust.o){
+    L.push("تباعد المصدرين فوق "+nf(DEC_AGREE*100,0)+" سم يُسقط وسم التصادق (الفارق الآن "
+      +nf(Math.abs(D.trust.o.dv)*100,0)+" سم بفاصل "+nf(D.trust.o.lag,0)+" يوماً).");
+  }
+  if(D.alert){
+    L.push("تغيّر مستوى الإنذار عند حلفا عن ("+D.alert.nm+") يغيّر أفق التحضير.");
+  }
+  L.push("إدخال أول قياس تصرف أرضى عند حلفا يحوّل الحكم من قراءة منسوب إلى موازنة وارد.");
+  return L;
+}
+
+function decCard(){
+  var D=decState(), V=decVerdict(D), h="";
+  h+='<div class="panel dec-card"><span class="eyebrow">بطاقة القرار</span>';
+  h+='<h2>الموقف · المسار · العتبة · القرار</h2>';
+  if(!D){
+    h+='<p class="note">'+esc(V.why)+'</p></div>';
+    return h;
+  }
+  var N=D.N, T=D.trust;
+  h+='<table class="tbl dec-tbl"><tbody>';
+  /* ١ */
+  h+='<tr><th>الموقف اليوم</th><td>منسوب بحيرة ناصر <b>'+nf(N.h,2)+' م</b> بمرجع مقياس السد العالى'
+    +' (الرصد '+esc(N.t)+' · منذ '+nf(N.age,0)+' يوماً · '+esc(N.srcNm)+')'
+    +(N.zone?' — النطاق: '+esc(N.zone.nm):"")
+    +(N.v&&N.v.official!==null&&N.v.official!==undefined?' · التخزين '+nf(N.v.official,1)+' مليار م³':"")
+    +(D.halfa!==null?'<br>التصرف المُنمذَج عند حلفا '+nf(D.halfa,0)+' م³/ث — '+esc(D.alert.nm):"")
+    +'</td></tr>';
+  /* ٢ */
+  h+='<tr><th>المسار</th><td>'
+    +(D.rate
+      ? ('معدل مرصود <b>'+nf(D.rate.mPerDay*100,1)+' سم/يوم</b> على '+nf(D.rate.days,0)+' يوماً'
+         +' ← بعد ١٠ أيام '+nf(D.proj[10],2)+' م · بعد ٣٠ يوماً '+nf(D.proj[30],2)+' م'
+         +'<br><span class="muted">استقراء خطى على المعدل المرصود — ليس تنبؤاً نموذجياً</span>')
+      : 'لا يُشتقّ معدل — لا رصدتان بينهما ٨–٧٥ يوماً')
+    +'</td></tr>';
+  /* ٣ */
+  h+='<tr><th>العتبة الأقرب</th><td>'
+    +(D.next
+      ? (D.next.stable ? 'لا عتبة تُبلَغ — المنسوب مستقر'
+        : (D.next.none ? 'لا عتبة فى اتجاه الحركة الحالى'
+          : '<b>'+esc(D.next.nm)+'</b> عند '+nf(D.next.h,2)+' م — خلال <b>'+nf(D.next.days,0)+' يوماً</b>'
+            +'<br>الإجراء المقابل: '+esc(D.next.act)))
+      : '—')
+    +'</td></tr>';
+  /* ٤ */
+  h+='<tr><th>القرار المطلوب</th><td><span class="badge '+esc(V.cls)+'">'+esc(V.nm)+'</span><br>'+esc(V.why)+'</td></tr>';
+  /* ٥ */
+  var F=decFlip(D), i;
+  h+='<tr><th>ما يقلب هذا الحكم</th><td><ul class="dec-flip">';
+  for(i=0;i<F.length;i++) h+='<li>'+esc(F[i])+'</li>';
+  h+='</ul></td></tr>';
+  h+='<tr><th>ثقة الرقم</th><td><span class="badge '+esc(T.cls)+'">'+esc(T.nm)+'</span>'
+    +(T.o? ' · الفارق '+nf(Math.abs(T.o.dv)*100,0)+' سم بفاصل '+nf(T.o.lag,0)+' يوماً ('+esc(T.o.srcNm)+')':"")
+    +'</td></tr>';
+  h+='</tbody></table></div>';
+  return h;
+}
+
+function decScenarios(){
+  var D=decState(); if(!D) return "";
+  var rows="", i;
+  var S=[];
+  if(D.rate) S.push({ nm:"الأرجح — المعدل المرصود", r:D.rate.mPerDay, n:D.next });
+  if(D.worst&&D.worst.r>0) S.push({ nm:"الأسوأ المعقول — أسرع صعود مرصود", r:D.worst.r, n:D.nextWorst });
+  if(!S.length) return "";
+  for(i=0;i<S.length;i++){
+    var s=S[i];
+    var p30=D.N.h+s.r*30;
+    rows+='<tr><td>'+esc(s.nm)+'</td><td>'+nf(s.r*100,1)+'</td><td>'+nf(p30,2)+'</td><td>'
+      +((s.n&&s.n.days!==undefined)? nf(s.n.days,0)+' يوماً نحو '+esc(s.n.nm) : '—')+'</td></tr>';
+  }
+  return panel("سيناريوهان لا خمسون","الأرجح والأسوأ المعقول",
+    '<table class="tbl"><thead><tr><th>السيناريو</th><th>سم/يوم</th><th>المنسوب بعد ٣٠ يوماً</th><th>العتبة والزمن</th></tr></thead><tbody>'
+    +rows+'</tbody></table>',
+    "الأسوأ المعقول ليس مضاعِفاً مفترَضاً — هو أسرع صعود <b>مرصود فعلياً</b> فى آخر ٤٠٠ يوم على نوافذ ٢٠–٤٥ يوماً.");
+}
+
+function decLadder(){
+  var D=decState(); if(!D) return "";
+  var h=D.N.h, rows="", i;
+  for(i=0;i<DEC_ACTIONS.length;i++){
+    var T=DEC_ACTIONS[i], d=T.h-h;
+    var days=(D.rate&&Math.abs(D.rate.mPerDay)>=DEC_FLAT&&(d/D.rate.mPerDay)>0)
+      ? nf(d/D.rate.mPerDay,0)+' يوماً' : '—';
+    rows+='<tr'+(Math.abs(d)<0.001?' class="hl"':'')+'><td>'+nf(T.h,2)+'</td><td>'+esc(T.nm)
+      +'</td><td>'+esc(T.act)+'</td><td>'+(d>0?'+':'')+nf(d,2)+'</td><td>'+days+'</td></tr>';
+  }
+  return panel("سلّم العتبات والإجراءات","كل عتبة وإجراؤها الرسمى",
+    '<table class="tbl"><thead><tr><th>المنسوب</th><th>العتبة</th><th>الإجراء</th><th>الفارق (م)</th><th>الزمن بالمعدل الحالى</th></tr></thead><tbody>'
+    +rows+'</tbody></table>',
+    "المناسيب والإجراءات من سجل الوزارة — بمرجع مقياس السد العالى، والألتيمترى مردود إليه بإزاحة "+nf(NAS_DATUM_DEF,2)+" م.");
+}
+
+function secDecide(){
+  var h="";
+  h+='<p class="note no-print">صفحة واحدة لصاحب القرار. لا معادلة جديدة هنا — كل رقم مقروء من الأقسام الفنية، '
+    +'والمسار استقراء خطى معلن على المنسوب <b>المرصود</b> لا على الوارد المُنمذَج.</p>';
+  h+='<div class="no-print" style="margin-bottom:10px"><button class="btn" onclick="window.print()">طباعة نشرة القرار</button></div>';
+  h+=decCard();
+  h+='<div class="no-print">'+decScenarios()+decLadder()+'</div>';
+  return h;
+}
+
 function secCommand(){
   if(!ST.q) return panel("مركز قيادة الموجة","جارٍ تحميل البيانات الحية", skel(6));
   var k=nowIdx(), rt=runRouting(), ens=runEnsemble();
@@ -9127,7 +9364,8 @@ function secCert(){
 function render(){
   var c=$("content"); if(!c) return;
   var h="";
-  if(ST.sec==="command")       h=secCommand();
+  if(ST.sec==="decide")        h=secDecide();
+  else if(ST.sec==="command")  h=secCommand();
   else if(ST.sec==="trust")    h=secTrust();
   else if(ST.sec==="finger")   h=secFinger();
   else if(ST.sec==="ensemble") h=secEnsemble();
