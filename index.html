@@ -237,7 +237,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.95</small>
+      <small id="buildtag">build 2.96</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -732,7 +732,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.95";
+var BUILD = "2.96";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -3151,20 +3151,33 @@ var SRC_ADJ_MIN=3;     /* أقل عدد أزواج تُقاس عليه الإز�
 var SRC_ADJ_MAX=1.50;  /* فوقها تباعد لا إزاحة مرجع — فلا تُطبَّق */
 var NAS_NEAR=0.50;     /* نطاق «قرب عتبة توشكى» الذى يستدعى حكماً مسانداً */
 
+var _crossMemo={};
 function srcCross(gid, did){
-  /* مزاوجة كل رصدة NASA بأقرب رصدة DAHITI داخل SRC_PAIR_D يوماً */
+  /* مزاوجة كل رصدة NASA بأقرب رصدة DAHITI داخل SRC_PAIR_D يوماً.
+     مذاكَرة إلزامية: العملية O(n·m) على سلسلتين بأكثر من ألف نقطة لكلٍّ،
+     وlakePick تستدعيها اثنتى عشرة مرة فى رسمة واحدة لبطاقة القرار.
+     المفتاح مشتقّ من طولَى السلسلتين وآخر تاريخ فيهما — فأى وصول
+     لرصدة جديدة يُبطل الذاكرة تلقائياً بلا تدخّل. */
   var G=ST.gwm.data[gid], D=ST.alti.data[did];
   if(!G||!G.series||!G.series.length||!D||!D.series||!D.series.length) return null;
+  var _k=gid+"|"+did+"|"+G.series.length+"|"+D.series.length
+        +"|"+G.series[G.series.length-1].t+"|"+D.series[D.series.length-1].t;
+  if(_crossMemo[_k]!==undefined) return _crossMemo[_k];
   var pairs=[], i, j, best, bd, gn, dn;
+  /* أرقام الأيام تُحسب مرة واحدة لكل سلسلة قبل الحلقة المزدوجة — لا داخلها.
+     نفس المنطق ونفس المخرَج بالضبط، بلا مليون تحليل نصّ. */
+  var gN=[], dN=[];
+  for(i=0;i<G.series.length;i++) gN[i]=altiDayNum(G.series[i].t);
+  for(j=0;j<D.series.length;j++) dN[j]=altiDayNum(D.series[j].t);
   for(i=0;i<G.series.length;i++){
-    gn=altiDayNum(G.series[i].t); best=null; bd=1e9;
+    gn=gN[i]; best=null; bd=1e9;
     for(j=0;j<D.series.length;j++){
-      dn=Math.abs(altiDayNum(D.series[j].t)-gn);
+      dn=dN[j]-gn; if(dn<0) dn=-dn;
       if(dn<bd){ bd=dn; best=D.series[j]; }
     }
     if(best && bd<=SRC_PAIR_D) pairs.push({ t:G.series[i].t, g:G.series[i].v, d:best.v, dt:bd, td:best.t });
   }
-  if(pairs.length<SRC_ADJ_MIN) return { few:true, n:pairs.length };
+  if(pairs.length<SRC_ADJ_MIN){ _crossMemo[_k]={ few:true, n:pairs.length }; return _crossMemo[_k]; }
   var df=[], sum=0, mx=-1e9, mn=1e9, k, x;
   for(k=0;k<pairs.length;k++){
     x=pairs[k].g-pairs[k].d; df.push(x);
@@ -3175,7 +3188,8 @@ function srcCross(gid, did){
   sd=Math.sqrt(sd/pairs.length);
   df.sort(function(a,b){ return a-b; });
   var m=(df.length%2)? df[(df.length-1)/2] : (df[df.length/2-1]+df[df.length/2])/2;
-  return { few:false, n:pairs.length, mean:mean, med:m, sd:sd, mn:mn, mx:mx, last:pairs[pairs.length-1] };
+  _crossMemo[_k]={ few:false, n:pairs.length, mean:mean, med:m, sd:sd, mn:mn, mx:mx, last:pairs[pairs.length-1] };
+  return _crossMemo[_k];
 }
 function srcBias(kind){
   /* إزاحة المصدرين مقيسة لا مفترضة — الوسيط أمتن من المتوسط أمام الشواذّ */
@@ -3495,7 +3509,10 @@ function decWorst(){
     if(tn-altiDayNum(S[i].t)>400) continue;
     for(j=i+1;j<S.length;j++){
       var d=altiDayNum(S[j].t)-altiDayNum(S[i].t);
-      if(d<20||d>45) continue;
+      /* السلسلة مرتّبة تصاعدياً: ما إن يتجاوز الفارق ٤٥ يوماً فكل ما بعده أبعد
+         — الكسر هنا يحوّل الحلقة من n² على كل السلسلة إلى نافذة قصيرة */
+      if(d>45) break;
+      if(d<20) continue;
       var r=(S[j].v-S[i].v)/d;
       if(best===null||r>best.r) best={ r:r, d:d, from:S[i].t, to:S[j].t };
     }
@@ -3596,8 +3613,9 @@ function decFlip(D){
   return L;
 }
 
-function decCard(){
-  var D=decState(), V=decVerdict(D), h="";
+function decCard(D){
+  if(D===undefined) D=decState();
+  var V=decVerdict(D), h="";
   h+='<div class="panel dec-card"><span class="eyebrow">بطاقة القرار</span>';
   h+='<h2>الموقف · المسار · العتبة · القرار</h2>';
   if(!D){
@@ -3645,8 +3663,9 @@ function decCard(){
   return h;
 }
 
-function decScenarios(){
-  var D=decState(); if(!D) return "";
+function decScenarios(D){
+  if(D===undefined) D=decState();
+  if(!D) return "";
   var rows="", i;
   var S=[];
   if(D.rate) S.push({ nm:"الأرجح — المعدل المرصود", r:D.rate.mPerDay, n:D.next });
@@ -3664,8 +3683,9 @@ function decScenarios(){
     "الأسوأ المعقول ليس مضاعِفاً مفترَضاً — هو أسرع صعود <b>مرصود فعلياً</b> فى آخر ٤٠٠ يوم على نوافذ ٢٠–٤٥ يوماً.");
 }
 
-function decLadder(){
-  var D=decState(); if(!D) return "";
+function decLadder(D){
+  if(D===undefined) D=decState();
+  if(!D) return "";
   var h=D.N.h, rows="", i;
   for(i=0;i<DEC_ACTIONS.length;i++){
     var T=DEC_ACTIONS[i], d=T.h-h;
@@ -3685,8 +3705,10 @@ function secDecide(){
   h+='<p class="note no-print">صفحة واحدة لصاحب القرار. لا معادلة جديدة هنا — كل رقم مقروء من الأقسام الفنية، '
     +'والمسار استقراء خطى معلن على المنسوب <b>المرصود</b> لا على الوارد المُنمذَج.</p>';
   h+='<div class="no-print" style="margin-bottom:10px"><button class="btn" onclick="window.print()">طباعة نشرة القرار</button></div>';
-  h+=decCard();
-  h+='<div class="no-print">'+decScenarios()+decLadder()+'</div>';
+  /* الحالة تُحسب مرة واحدة وتُمرَّر — كانت تُحسب ثلاث مرات فى الرسمة الواحدة */
+  var D=decState();
+  h+=decCard(D);
+  h+='<div class="no-print">'+decScenarios(D)+decLadder(D)+'</div>';
   return h;
 }
 
@@ -7337,7 +7359,16 @@ function altiLoad(sel){
     netErr("تعذّر جلب الألتيمترى (DAHITI)", e); render(); return null;
   });
 }
-function altiDayNum(iso){ var p=String(iso).split("-"); return Date.UTC(+p[0],+p[1]-1,+p[2])/864e5; }
+var _dayMemo={};
+function altiDayNum(iso){
+  /* ذاكرة التواريخ: هذه الدالة تُستدعى داخل حلقات مزدوجة بملايين التكرارات
+     (srcCross · decWorst · serStats)، وتحليل النص وDate.UTC فى كل تكرار كان
+     يجمّد الواجهة عند الإقلاع. القيمة نفسها لكل تاريخ فتُحسب مرة واحدة. */
+  var k=String(iso).slice(0,10), v=_dayMemo[k];
+  if(typeof v==="number") return v;
+  var p=k.split("-"); v=Date.UTC(+p[0],+p[1]-1,+p[2])/864e5;
+  _dayMemo[k]=v; return v;
+}
 function altiStats(sel){
   var D=ST.alti.data[sel]; if(!D||D.series.length<2) return null;
   var S=D.series, last=S[S.length-1], tn=altiDayNum(last.t);
