@@ -237,7 +237,7 @@ table.tb tr.hi td{background:#f2f7f4}
     <div class="nav-foot">
       <span id="dot" style="width:8px;height:8px;border-radius:50%;background:var(--amber)"></span>
       <span id="conn">جارٍ الاتصال…</span>
-      <small id="buildtag">build 2.96</small>
+      <small id="buildtag">build 2.97</small>
       <span></span><span id="syncbadge" class="pill lake" style="margin-top:6px">—</span>
     </div>
   </aside>
@@ -732,7 +732,7 @@ table.tb tr.hi td{background:#f2f7f4}
    الإدارة المركزية للموارد المائية والرى لمحافظتى القاهرة والجيزة
    ===================================================================== */
 
-var BUILD = "2.96";
+var BUILD = "2.97";
 var APPID = "nile-flood-forecast";
 
 /* المحطات: gLat/gLon = الموقع الجغرافى الاسمى للمحطة،
@@ -823,6 +823,7 @@ var ST = {
   mcal:{ on:false, busy:false, prog:"", err:"", arch:null, par:null, diag:{}, sum:null, yr:null, wy:null },
   rlv:{ sel:"khartoum", data:{}, arch:{}, loading:"", err:"" },
   gwm:{ sel:"gerd", data:{}, loading:"", err:"" },
+  egy:{ sel:"dairout", data:{}, loading:"", err:"", busy:false, fails:0 },
   nudge:false,
   lakeBoot:false,
   calM:{ running:false, done:0, res:{}, fail:[] },
@@ -1773,11 +1774,14 @@ function plot(o){
     s += '<line x1="'+ml+'" y1="'+yy.toFixed(1)+'" x2="'+(ml+iw)+'" y2="'+yy.toFixed(1)+'" stroke="#ece6d8" stroke-width="1"/>';
     s += '<text class="axis-lbl" x="'+(ml-7)+'" y="'+(yy+3).toFixed(1)+'" text-anchor="end">'+nf(yt[i],0)+'</text>';
   }
-  var stepX = Math.max(1, Math.round(N/8));
+  /* o.raw: المحور الأفقى نصّى لا تواريخ (المنحنى الطولى) — بدونها يطبع dmy على نصّ فيخرج undefined */
+  var stepX = o.raw? 1 : Math.max(1, Math.round(N/8));
   for(i=0;i<N;i+=stepX){
     var xx=X(i);
     s += '<line x1="'+xx.toFixed(1)+'" y1="'+mt+'" x2="'+xx.toFixed(1)+'" y2="'+(mt+ih)+'" stroke="#f2ece0" stroke-width="1"/>';
-    s += '<text class="axis-lbl" x="'+xx.toFixed(1)+'" y="'+(mt+ih+14)+'" text-anchor="middle">'+dmy(T[i])+'</text>';
+    s += '<text class="axis-lbl" x="'+xx.toFixed(1)+'" y="'+(mt+ih+14)+'" text-anchor="middle"'
+       + (o.raw? ' transform="rotate(-40 '+xx.toFixed(1)+' '+(mt+ih+14)+')" style="font-size:10px"' : '')
+       + '>'+(o.raw? esc(String(T[i])) : dmy(T[i]))+'</text>';
   }
 
   /* أشرطة الأعضاء (المروحة) */
@@ -7391,6 +7395,7 @@ function altiModeBar(){
     +'<button class="btn mini'+(ST.alti.mode!=="river"?" solid":"")+'" id="alti-m-lake">◉ بحيرات (تخزين)</button>'
     +'<button class="btn mini'+(ST.alti.mode==="river"?" solid":"")+'" id="alti-m-river">⌒ مجرى النهر (تحقق)</button>'
     +'<button class="btn mini'+(ST.alti.mode==="gwm"?" solid":"")+'" id="alti-m-gwm">◉ مصدر ثانٍ — NASA</button>'
+    +'<button class="btn mini'+(ST.alti.mode==="egy"?" solid":"")+'" id="alti-m-egy">⌒ مجرى مصر (رصد)</button>'
     +'</div>';
 }
 /* =====================================================================
@@ -7982,9 +7987,341 @@ function secGwm(){
   return s;
 }
 
+/* =====================================================================
+   مجرى النيل داخل مصر — رصد ألتيمترى (بيلد 2.97)
+   قاعدة البناء: **رصد وتحقق فقط**. هذه النقاط كلها أسفل السد العالى،
+   ومنسوبها تحكمه الإطلاقات وتشغيل القناطر لا موجة الفيضان الطبيعية،
+   فلا تدخل التتبّع ولا الاتزان ولا الإنذار ولا أى معايرة.
+   ولا معادلة جديدة هنا: الإحصاء بـserStats والمزاوجة بمنطق موجود.
+   ===================================================================== */
+var EGY_PAIR_D = 30;    /* فارق التاريخ الذى يجعل مقارنة محطتين غير موثوقة */
+var EGY_STALE  = 60;    /* عمر الرصدة الذى يُلوَّن رملياً — الدورة هنا ١٠–٣٥ يوماً */
+var EGY_MAXFAIL= 5;     /* وقف الجلب الجماعى بعد خمسة إخفاقات — درس WaPOR */
+/* حدّ ضجيج الرتابة: هدفان متجاوران أعطيا فرقاً ٠٫١٦ م بتاريخين مختلفين، وهو ضجيج
+   قياس لا خطأ مرجع. فالانعكاس دون هذا الحدّ يُعلَن «داخل الضجيج» ولا يُعدّ إخفاقاً،
+   وفوقه فقط يُعدّ مؤشراً على خطأ مرجع رأسى فى محطة مفردة. */
+var EGY_MONO_TOL = 0.30;
+
+var EGY_TARGETS = [
+  { id:"komombo", src:"gwm",    file:"lake006215.10d.2.txt", nm:"كوم أمبو", sh:"كوم أمبو", lat:24.463, lon:32.880,
+    note:"اسمه عند NASA «Esna» والإحداثى يضعه عند كوم أمبو — <b>يُقرأ بالإحداثى لا بالاسم</b> (نفس فخّ تسمية سد النهضة «Millennium»)." },
+  { id:"esna",    src:"dahiti", dahiti:15290, nm:"إسنا", sh:"إسنا",              lat:25.61, lon:32.55 },
+  { id:"qena1",   src:"dahiti", dahiti:15289, nm:"قنا (١)", sh:"قنا ١",           lat:26.10, lon:32.42 },
+  { id:"qena2",   src:"dahiti", dahiti:16740, nm:"قنا (٢)", sh:"قنا ٢",           lat:26.11, lon:32.44,
+    twin:"qena1", note:"هدفان على بُعد نحو كيلومتر — فرقهما اختبار تكرار مباشر لدقة الألتيمترى نفسه." },
+  { id:"nagham",  src:"dahiti", dahiti:15059, nm:"نجع حمادى", sh:"نجع حمادى",     lat:26.24, lon:32.01,
+    weir:"قناطر نجع حمادى" },
+  { id:"sohag",   src:"dahiti", dahiti:16384, nm:"سوهاج", sh:"سوهاج",             lat:26.65, lon:31.65 },
+  { id:"asyutU",  src:"gwm",    file:"lake006217.10d.2.txt", nm:"أسيوط — أمام القناطر", sh:"أسيوط أمام", lat:27.146, lon:31.307,
+    note:"الهدف الوحيد فى مصر بتأخّر أيام لا أسابيع (شبه لحظى IGDR)." },
+  { id:"asyutD",  src:"dahiti", dahiti:17687, nm:"أسيوط — خلف القناطر", sh:"أسيوط خلف", lat:27.38, lon:30.94,
+    weir:"قناطر أسيوط" },
+  { id:"dairout", src:"dahiti", dahiti:17685, nm:"ديروط", sh:"ديروط",             lat:27.56, lon:30.85,
+    note:"هذه هى نقطة منظومة ديروط — أطول سلسلة فى الصعيد (منذ ٢٠٠٩)." },
+  { id:"minya",   src:"dahiti", dahiti:17469, nm:"المنيا", sh:"المنيا",            lat:28.56, lon:30.84 },
+  { id:"bnsuef",  src:"dahiti", dahiti:11691, nm:"بنى سويف", sh:"بنى سويف",        lat:29.11, lon:31.15 },
+  { id:"rosetta", src:"dahiti", dahiti:8972,  nm:"فرع رشيد", sh:"رشيد",            lat:31.05, lon:30.46,
+    note:"أسفل قناطر الدلتا — أطول سلسلة مصرية (منذ ٢٠٠٨)." }
+];
+/* أهداف انتهت فعلياً — تُذكر بأسمائها ولا تُجلب، فالصمت عنها يوهم بتغطية أوسع */
+var EGY_DEAD = [
+  { id:17695, nm:"الأقصر",     end:"٢٠١٠-٠٨" },
+  { id:17694, nm:"الأقصر",     end:"٢٠١٠-٠٨" },
+  { id:17684, nm:"المنيا",     end:"٢٠١٠-٠٩" },
+  { id:950,   nm:"نجع حمادى",  end:"٢٠١٦-٠٥" }
+];
+function egyT(id){ var i; for(i=0;i<EGY_TARGETS.length;i++) if(EGY_TARGETS[i].id===id) return EGY_TARGETS[i]; return EGY_TARGETS[0]; }
+
+/* مسافة دائرة عظمى بالكيلومتر — مستقيمة لا طول مجرى (الانحياز معلن فى الواجهة) */
+function egyKm(a,b){
+  var R=6371, rd=Math.PI/180;
+  var dLa=(b.lat-a.lat)*rd, dLo=(b.lon-a.lon)*rd;
+  var s=Math.sin(dLa/2)*Math.sin(dLa/2)
+       +Math.cos(a.lat*rd)*Math.cos(b.lat*rd)*Math.sin(dLo/2)*Math.sin(dLo/2);
+  return 2*R*Math.atan2(Math.sqrt(s), Math.sqrt(1-s));
+}
+function egyLoad(id){
+  var T=egyT(id);
+  ST.egy.loading=id; ST.egy.err=""; render();
+  var P;
+  if(T.src==="gwm"){
+    P=fetch(gwmUrl(T)).then(function(r){
+      if(!r.ok) return r.text().then(function(tx){ throw new Error("HTTP "+r.status+" — "+String(tx).slice(0,160)); });
+      return r.text();
+    }).then(function(tx){
+      var S=gwmParse(tx);
+      if(!S.length) throw new Error("الملف وصل بلا صفوف صالحة");
+      return S;
+    });
+  } else {
+    P=Promise.resolve(altiKey()).then(function(K){
+      if(!K||!K.key){ ST.alti.keyOk=false; throw new Error("مفتاح DAHITI غير متاح — أدخله فى وضع البحيرات"); }
+      return fetch(ALTI_API+"?api_key="+encodeURIComponent(K.key)+"&dahiti_id="+T.dahiti+"&format=json");
+    }).then(function(r){
+      if(!r.ok) return r.text().then(function(tx){ throw new Error("HTTP "+r.status+" — "+String(tx).slice(0,160)); });
+      return r.json();
+    }).then(function(d){
+      var arr=(d&&d.data)?d.data:[], out=[], i, un;
+      for(i=0;i<arr.length;i++){
+        var w=arr[i];
+        var lv=(w.water_level!==un&&w.water_level!==null)? w.water_level : w.wse;
+        var er=(w.error!==un&&w.error!==null)? w.error : w.wse_u;
+        var tt=w.date||w.datetime;
+        if(lv===un||lv===null||isNaN(lv)||!tt) continue;
+        out.push({ t:String(tt).slice(0,10), v:Number(lv), u:(er!==un&&er!==null&&!isNaN(er)?Number(er):null) });
+      }
+      out.sort(function(a,b){ return a.t<b.t? -1 : (a.t>b.t?1:0); });
+      if(!out.length) throw new Error("الرد وصل بلا رصدة صالحة");
+      return out;
+    });
+  }
+  return P.then(function(S){
+    ST.egy.data[id]={ series:S, at:Date.now() };
+    ST.egy.loading=""; render(); return S;
+  }).catch(function(e){
+    ST.egy.loading=""; ST.egy.err=(e&&e.message)?e.message:String(e); ST.egy.fails++;
+    netErr("تعذّر جلب نقطة "+T.nm, e); render(); return null;
+  });
+}
+/* جلب جماعى تتابعى قابل للاستئناف — لا يعيد ما نجح، ويقف بعد خمسة إخفاقات */
+function egyLoadAll(){
+  if(ST.egy.busy) return Promise.resolve(null);
+  ST.egy.busy=true; ST.egy.fails=0; render();
+  var chain=Promise.resolve(), i;
+  for(i=0;i<EGY_TARGETS.length;i++){
+    (function(T){
+      chain=chain.then(function(){
+        if(ST.egy.fails>=EGY_MAXFAIL) return null;
+        if(ST.egy.data[T.id]) return null;
+        return egyLoad(T.id).then(function(x){
+          return new Promise(function(res){ setTimeout(function(){ res(x); }, 250); });
+        });
+      }).catch(function(){ return null; });
+    })(EGY_TARGETS[i]);
+  }
+  return chain.then(function(){
+    ST.egy.busy=false;
+    auditLog("جلب نقاط النيل داخل مصر", egyLoadedCount()+" من "+EGY_TARGETS.length);
+    render(); return true;
+  });
+}
+function egyLoadedCount(){ var n=0,i; for(i=0;i<EGY_TARGETS.length;i++) if(ST.egy.data[EGY_TARGETS[i].id]) n++; return n; }
+function egyLast(id){
+  var D=ST.egy.data[id];
+  if(!D||!D.series||!D.series.length) return null;
+  var L=D.series[D.series.length-1];
+  return { t:L.t, v:L.v, u:(L.u===undefined?null:L.u), n:D.series.length, from:D.series[0].t,
+           age:Math.max(0, Math.floor(Date.now()/864e5)-altiDayNum(L.t)) };
+}
+/* المنحنى الطولى: آخر رصدة لكل نقطة محمَّلة، مرتّبة من الجنوب للشمال */
+function egyProfile(){
+  var rows=[], i;
+  for(i=0;i<EGY_TARGETS.length;i++){
+    var T=EGY_TARGETS[i], L=egyLast(T.id);
+    if(L) rows.push({ T:T, L:L });
+  }
+  rows.sort(function(a,b){ return a.T.lat-b.T.lat; });
+  for(i=1;i<rows.length;i++){
+    var u=rows[i-1], d=rows[i];
+    var km=egyKm(u.T, d.T);
+    var drop=u.L.v-d.L.v;
+    var dt=Math.abs(altiDayNum(u.L.t)-altiDayNum(d.L.t));
+    d.seg={ km:km, drop:drop, dt:dt, far:(dt>EGY_PAIR_D),
+            slope:(km>0.5? (drop*100/km) : null),   /* سم/كم */
+            up:u.T.nm };
+  }
+  return rows;
+}
+/* اختبار الرتابة — أى خطأ مرجع رأسى فى محطة مفردة يظهر انعكاساً فى المنحنى */
+function egyMono(){
+  var R=egyProfile();
+  if(R.length<3) return { few:true, n:R.length };
+  var bad=[], soft=[], i;
+  for(i=1;i<R.length;i++){
+    if(!R[i].seg || R[i].seg.drop>=0) continue;
+    if(-R[i].seg.drop<=EGY_MONO_TOL) soft.push(R[i]); else bad.push(R[i]);
+  }
+  return { few:false, n:R.length, ok:(bad.length===0), bad:bad, soft:soft };
+}
+/* اختبار التكرار — هدفان متجاوران يقيسان نفس المقطع */
+function egyTwin(){
+  var i;
+  for(i=0;i<EGY_TARGETS.length;i++){
+    var T=EGY_TARGETS[i]; if(!T.twin) continue;
+    var A=egyLast(T.id), B=egyLast(T.twin); if(!A||!B) continue;
+    var O=egyT(T.twin);
+    return { a:T, b:O, dv:Math.abs(A.v-B.v), dt:Math.abs(altiDayNum(A.t)-altiDayNum(B.t)),
+             km:egyKm(T,O), ta:A.t, tb:B.t };
+  }
+  return null;
+}
+function egyFresh(){
+  var best=null, i;
+  for(i=0;i<EGY_TARGETS.length;i++){
+    var L=egyLast(EGY_TARGETS[i].id); if(!L) continue;
+    if(best===null||L.age<best.age) best={ nm:EGY_TARGETS[i].nm, t:L.t, age:L.age, v:L.v };
+  }
+  return best;
+}
+function secEgypt(){
+  var i, s=altiModeBar();
+  s+='<div class="banner warn"><span>⚠</span><div>'
+    +'<b>رصد وتحقق لا تنبؤ.</b> كل هذه النقاط <b>أسفل السد العالى</b>، ومنسوبها تحكمه '
+    +'الإطلاقات وتشغيل القناطر لا موجة الفيضان الطبيعية. '
+    +'فهى <b>لا تدخل التتبّع ولا الاتزان ولا الإنذار ولا المعايرة</b> — ولا يُقرأ ارتفاعها كوصول موجة.'
+    +'</div></div>';
+  s+='<div class="banner danger"><span>⚠</span><div>'
+    +'<b>المرجع الرأسى مختلف — الأرقام المطلقة لا تُقارن بأرقام الوزارة.</b> '
+    +'DAHITI على الجيود (EIGEN-6C4) وNASA على EGM2008، والمناسيب الرسمية على مرجع المساحة المصرية. '
+    +'الصالح هنا: <b>الفروق والاتجاهات وشكل المنحنى الطولى</b> — لا القيمة المطلقة. '
+    +'وقراءة مقياس رسمى واحدة بتاريخها عند أى نقطة تحسم إزاحتها نهائياً.'
+    +'</div></div>';
+  s+='<div class="banner info"><span>ℹ</span><div>'
+    +'<b>فجوة القاهرة والجيزة:</b> لا نقطة ألتيمترى واحدة على النيل بين <b>بنى سويف (٢٩٫١١ شمالاً)</b> '
+    +'و<b>فرع رشيد (٣١٫٠٥ شمالاً)</b> — أى <b>لا تغطية على مجرى الإدارة المركزية للقاهرة والجيزة</b>. '
+    +'أقرب نقطة جنوباً بنى سويف. وهذه فجوة فى الكتالوج العام لا نقص فى التطبيق.'
+    +'</div></div>';
+  var dead="";
+  for(i=0;i<EGY_DEAD.length;i++)
+    dead+=(i?" · ":"")+esc(EGY_DEAD[i].nm)+" ("+EGY_DEAD[i].id+") انتهت "+esc(EGY_DEAD[i].end);
+  s+='<div class="banner"><span>⊘</span><div><b>أهداف مصرية ميتة مستبعَدة عمداً:</b> '+dead
+    +' — أقمار قديمة توقّفت ولم تُستبدَل عند هذه المقاطع.</div></div>';
+
+  var opts="";
+  for(i=0;i<EGY_TARGETS.length;i++)
+    opts+='<option value="'+EGY_TARGETS[i].id+'"'+(ST.egy.sel===EGY_TARGETS[i].id?" selected":"")+'>'
+      +esc(EGY_TARGETS[i].nm)+'</option>';
+  var ctl='<div class="ctrl"><label>النقطة:</label><select id="egy-sel">'+opts+'</select>'
+    +'<button class="btn" id="egy-load"'+(ST.egy.loading?" disabled":"")+'>'
+    +(ST.egy.loading?"⏳ جارٍ الجلب…":"⤓ اجلب هذه النقطة")+'</button>'
+    +'<button class="btn solid" id="egy-all"'+(ST.egy.busy?" disabled":"")+'>'
+    +(ST.egy.busy?"⏳ جارٍ الجلب…":"⤓⤓ اجلب كل النقاط")+'</button>'
+    +'<span class="pill lake">'+egyLoadedCount()+' من '+EGY_TARGETS.length+' محمَّلة</span></div>';
+  s+=panel("مجرى النيل داخل مصر","اثنتا عشرة نقطة حية من كوم أمبو إلى فرع رشيد", ctl,
+    'مصدران مستقلان: <b>DAHITI</b> (عشر نقاط · تأخّر ٤–٦ أسابيع) و<b>NASA GWM</b> '
+    +'(نقطتان · تأخّر أيام). الجلب الجماعى تتابعى قابل للاستئناف، ولا يعيد ما نجح، '
+    +'ويقف بعد '+EGY_MAXFAIL+' إخفاقات.');
+  if(ST.egy.err)
+    s+='<div class="banner danger"><span>⚠</span><div><b>آخر خطأ:</b> '+esc(ST.egy.err)+'</div></div>';
+
+  var R=egyProfile();
+  if(!R.length)
+    return s+panel("لم تُجلب أى نقطة بعد","اضغط «اجلب كل النقاط»",
+      '<p class="note">نقاط DAHITI تحتاج المفتاح نفسه المستخدم فى وضع البحيرات، ونقطتا NASA لا تحتاجان مفتاحاً.</p>');
+
+  /* بطاقات الحالة */
+  var F=egyFresh(), M=egyMono(), W=egyTwin();
+  var span=(R.length>1)? (R[0].L.v-R[R.length-1].L.v) : null;
+  var kmTot=(R.length>1)? egyKm(R[0].T, R[R.length-1].T) : null;
+  s+='<div class="grid g4" style="margin-top:12px">'
+    +kpi("⌗","lake","نقاط محمَّلة", R.length, "من "+EGY_TARGETS.length, "الميتة مستبعَدة")
+    +kpi("◷", (F&&F.age>EGY_STALE)?"sand":"", "أحدث رصدة فى الشبكة", F?esc(F.t):"—", "",
+         F? (esc(F.nm)+" · منذ "+nf(F.age,0)+" يوماً") : "—")
+    +kpi("↕","","الفارق الكلى فى المنسوب", span!==null?nf(span,2):"—","م",
+         kmTot!==null? ("على "+nf(kmTot,0)+" كم مستقيمة"):"—")
+    +kpi(M.few?"⊙":(M.ok?"✓":"⚠"), M.few?"":(M.ok?(M.soft.length?"sand":"ok"):"danger"), "رتابة المنحنى الطولى",
+         M.few?"—":(M.ok?"سليمة":(M.bad.length+" انعكاس")), "",
+         M.few?"تحتاج ثلاث نقاط"
+             :(M.ok?(M.soft.length? (M.soft.length+" انعكاس داخل الضجيج ±"+nf(EGY_MONO_TOL,2)+" م")
+                                  :"هابط شمالاً بلا انعكاس")
+                   :"انعكاس فوق حدّ الضجيج — راجع مرجع المحطة"))
+    +'</div>';
+
+  /* المنحنى الطولى */
+  var lbl=[], val=[];
+  for(i=0;i<R.length;i++){ lbl.push(R[i].T.sh||R[i].T.nm); val.push(R[i].L.v); }
+  s+=panel("المنحنى الطولى لسطح الماء","من الجنوب إلى الشمال — آخر رصدة لكل نقطة",
+    '<div class="chart-box">'+plot({ t:lbl, yTitle:"منسوب (م · مرجع جيودى)", mb:78, raw:true,
+       series:[{ v:val, color:"#155b75", wd:2.4 }] })+'</div>',
+    '<b>اختبار المرجع الرأسى:</b> المنحنى يجب أن يهبط شمالاً. الانعكاس دون '
+    +nf(EGY_MONO_TOL,2)+' م يُقرأ <b>ضجيج قياس</b> لا خطأ مرجع (وهو حدّ مأخوذ من اختبار التكرار أسفله)، '
+    +'وفوقه يُعدّ مؤشراً على خطأ مرجع رأسى فى محطة مفردة. '
+    +'خطأ مرجع فى محطة مفردة كان سيظهر هنا قفزةً معكوسة — وهذا نفس الاختبار الذى نجح عند دنقلا. '
+    +'<b>والتواريخ ليست واحدة</b>: كل نقطة بآخر رصدتها هى، والفارق الزمنى معروض فى الجدول.');
+
+  /* الجدول */
+  var rows="";
+  for(i=0;i<R.length;i++){
+    var T=R[i].T, L=R[i].L, A=serStats(ST.egy.data[T.id].series), sg=R[i].seg;
+    var ageCls=(L.age>EGY_STALE)?' class="hl"':'';
+    rows+='<tr'+ageCls+'><td>'+esc(T.nm)+'</td><td>'+nf(T.lat,2)+'</td>'
+      +'<td>'+(T.src==="gwm"?"NASA GWM":"DAHITI")+'</td>'
+      +'<td>'+esc(L.t)+'</td><td>'+nf(L.age,0)+'</td><td><b>'+nf(L.v,2)+'</b></td>'
+      +'<td>'+(A&&A.d30!==null?((A.d30>0?"+":"")+nf(A.d30,2)):"—")+'</td>'
+      +'<td>'+(A&&A.d365!==null?((A.d365>0?"+":"")+nf(A.d365,2)):"—")+'</td>'
+      +'<td>'+nf(L.n,0)+'</td>'
+      +'<td>'+(sg? (nf(sg.drop,2)+" م / "+nf(sg.km,0)+" كم"+(sg.far?" ⚠":"")) : "—")+'</td>'
+      +'<td>'+(sg&&sg.slope!==null? nf(sg.slope,1) : "—")+'</td></tr>';
+  }
+  s+=panel("جدول النقاط","الأحدث لكل نقطة وتغيّرها والميل إلى النقطة التالية",
+    '<div class="tb-wrap"><table class="tbl"><thead><tr><th>النقطة</th><th>°ش</th><th>المصدر</th>'
+    +'<th>آخر رصدة</th><th>العمر (يوم)</th><th>المنسوب (م)</th><th>Δ٣٠ (م)</th><th>Δسنة (م)</th>'
+    +'<th>رصدات</th><th>الهبوط عن السابقة</th><th>سم/كم</th></tr></thead><tbody>'
+    +rows+'</tbody></table></div>',
+    '<b>الميل المعروض حدّ أعلى لا قيمة حقيقية:</b> المسافة مستقيمة بين إحداثيين، وطول المجرى '
+    +'الفعلى أكبر منها بتعرّجه — فالميل الحقيقى <b>أقلّ</b> من المعروض بنفس النسبة. '
+    +'والعلامة ⚠ تعنى أن رصدتَى النقطتين متباعدتان أكثر من '+EGY_PAIR_D+' يوماً فالفرق بينهما '
+    +'يخلط الميل المكانى بتغيّر زمنى — يُقرأ بحذر. والصف المظلَّل رصدته أقدم من '+EGY_STALE+' يوماً.');
+
+  /* قفزات القناطر */
+  var wr="";
+  for(i=1;i<R.length;i++){
+    var Q=R[i]; if(!Q.T.weir||!Q.seg) continue;
+    wr+='<tr><td>'+esc(Q.T.weir)+'</td><td>'+esc(Q.seg.up)+' ← '+esc(Q.T.nm)+'</td>'
+      +'<td>'+nf(Q.seg.drop,2)+'</td><td>'+nf(Q.seg.km,0)+'</td>'
+      +'<td>'+(Q.seg.far?"متباعدة "+nf(Q.seg.dt,0)+" يوماً":"متقاربة")+'</td></tr>';
+  }
+  if(wr)
+    s+=panel("قفزات القناطر","الهبوط المفاجئ بين نقطتين متجاورتين",
+      '<table class="tbl"><thead><tr><th>المنشأ</th><th>بين النقطتين</th><th>الهبوط (م)</th>'
+      +'<th>المسافة (كم)</th><th>التواريخ</th></tr></thead><tbody>'+wr+'</tbody></table>',
+      'الهبوط هنا <b>مؤشر على وجود فقد مركّز عند المنشأ لا قياس لفرق التشغيل</b>: '
+      +'الرقم يجمع فقد القنطرة مع هبوط المجرى بين النقطتين ومع فارق تاريخ الرصدتين. '
+      +'يصير قياساً حقيقياً فقط برصدتين فى يوم واحد على طرفَى المنشأ.');
+
+  /* اختبار التكرار */
+  if(W)
+    s+=panel("اختبار تكرار مستقل","هدفان على بُعد "+nf(W.km,1)+" كم يقيسان نفس المقطع",
+      '<div class="grid g3">'
+      +kpi("≈", (W.dv<=0.30?"ok":(W.dv<=0.60?"sand":"danger")), "الفارق بين الهدفين", nf(W.dv,3), "م",
+           esc(W.a.nm)+" مقابل "+esc(W.b.nm))
+      +kpi("◷","","فارق تاريخ الرصدتين", nf(W.dt,0), "يوم", esc(W.ta)+" و"+esc(W.tb))
+      +kpi("↔","","المسافة بينهما", nf(W.km,1), "كم", "على نفس المقطع تقريباً")
+      +'</div>',
+      'هدفان متجاوران على مقطع واحد يجب أن يعطيا الرقم نفسه تقريباً. '
+      +'<b>فالفارق بينهما قياس مباشر لضجيج الألتيمترى نفسه على النيل داخل مصر</b> — '
+      +'وهو الحدّ الذى لا يُقرأ تحته أى تغيّر كأنه حقيقى. والفارق يشمل تغيّر المنسوب '
+      +'بين التاريخين، فيُقرأ كحدّ أعلى للضجيج لا كضجيج صافٍ.');
+
+  /* سلسلة النقطة المختارة */
+  var TS=egyT(ST.egy.sel), DS=ST.egy.data[ST.egy.sel];
+  if(DS&&DS.series.length){
+    var S=DS.series, t=[], v=[], step=Math.max(1,Math.floor(S.length/240)), j;
+    for(j=0;j<S.length;j+=step){ t.push(S[j].t); v.push(S[j].v); }
+    if((S.length-1)%step!==0){ t.push(S[S.length-1].t); v.push(S[S.length-1].v); }
+    var A2=serStats(S);
+    s+=panel(esc(TS.nm),"السلسلة الكاملة — "+S.length+" رصدة منذ "+esc(S[0].t),
+      '<div class="chart-box">'+plot({ t:t, yTitle:"منسوب (م)", series:[{v:v,color:"#155b75",wd:2.2}] })+'</div>'
+      +'<div class="grid g4" style="margin-top:12px">'
+      +kpi("≋","","آخر منسوب", nf(S[S.length-1].v,2),"م", esc(S[S.length-1].t))
+      +kpi("Δ","","تغيّر ٣٠ يوماً", (A2&&A2.d30!==null)?((A2.d30>0?"+":"")+nf(A2.d30,2)):"—","م","من أقرب رصدة")
+      +kpi("◐","sand","تغيّر ٩٠ يوماً", (A2&&A2.d90!==null)?((A2.d90>0?"+":"")+nf(A2.d90,2)):"—","م",
+           "وسنة: "+((A2&&A2.d365!==null)?((A2.d365>0?"+":"")+nf(A2.d365,2)):"—")+" م")
+      +kpi("⊙","lake","عدد الرصدات", S.length,"رصدة","منذ "+esc(S[0].t))
+      +'</div>'
+      +stampPill("obs"),
+      TS.note? TS.note : "رصد ألتيمترى مباشر — لا نمذجة ولا استيفاء لدينا.");
+  } else {
+    s+=panel(esc(TS.nm),"لم تُجلب هذه النقطة بعد",
+      '<p class="note">اضغط «اجلب هذه النقطة» أو «اجلب كل النقاط».</p>');
+  }
+  return s;
+}
+
 function secAlti(){
   if(ST.alti.mode==="river") return altiModeBar()+secRlev();
   if(ST.alti.mode==="gwm") return secGwm();
+  if(ST.alti.mode==="egy") return secEgypt();
   var T=altiTarget(ST.alti.sel), D=ST.alti.data[ST.alti.sel], A=altiStats(ST.alti.sel);
   var sel='<div class="ctrl"><label>البحيرة:</label><select id="alti-sel">',i;
   for(i=0;i<ALTI_TARGETS.length;i++)
@@ -9655,6 +9992,10 @@ function bindControls(){
   el=$("alti-m-lake"); if(el) el.onclick=function(){ ST.alti.mode="lake"; render(); };
   el=$("alti-m-river"); if(el) el.onclick=function(){ ST.alti.mode="river"; render(); };
   el=$("alti-m-gwm"); if(el) el.onclick=function(){ ST.alti.mode="gwm"; render(); };
+  el=$("alti-m-egy"); if(el) el.onclick=function(){ ST.alti.mode="egy"; render(); };
+  el=$("egy-sel");  if(el) el.onchange=function(){ ST.egy.sel=this.value; render(); };
+  el=$("egy-load"); if(el) el.onclick=function(){ egyLoad(ST.egy.sel); };
+  el=$("egy-all");  if(el) el.onclick=function(){ egyLoadAll(); };
   el=$("gwm-sel"); if(el) el.onchange=function(){ ST.gwm.sel=this.value; render(); };
   el=$("gwm-load"); if(el) el.onclick=function(){ gwmLoad(ST.gwm.sel); };
   el=$("gwm-all"); if(el) el.onclick=function(){
